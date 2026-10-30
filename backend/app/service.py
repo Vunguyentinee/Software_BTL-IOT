@@ -62,6 +62,8 @@ class Service:
         self._online = online
         if online:
             data = {"online": True, "since": now, "offline_since": self._offline_since}
+            if self._config["status"] == "pending":
+                self._config["sent_ts"] = now
             self._offline_since = None
         else:
             self._offline_since = now
@@ -164,9 +166,65 @@ class Service:
             if c["status"] == "pending" and now - c["sent_ts"] > self.settings.cmd_timeout_s:
                 self._finish_command(c["cmd_id"], "timeout", "no ack from device")
 
-    # ---- config (Task 5) -----------------------------------------------
+    # ---- config --------------------------------------------------------
     def _initial_config(self) -> dict:
-        return {}
+        saved = self.storage.load_config()
+        if saved and saved.get("config_id"):
+            # được publish lại khi MQTT kết nối, nên đang chờ ack
+            return {"config_id": saved["config_id"], "thresholds": saved["thresholds"],
+                    "status": "pending", "detail": None, "sent_ts": None}
+        return {"config_id": None, "thresholds": Thresholds().model_dump(),
+                "status": "none", "detail": None, "sent_ts": None}
+
+    def get_config(self) -> dict:
+        with self._lock:
+            c = self._config
+            return {"config_id": c["config_id"], "thresholds": dict(c["thresholds"]),
+                    "status": c["status"], "detail": c["detail"]}
+
+    def _save_and_emit_config(self) -> None:
+        c = self._config
+        self.storage.save_config({"config_id": c["config_id"], "thresholds": c["thresholds"],
+                                  "ts": self.clock()})
+        self._emit("config", self.get_config())
+
+    def _publish_config(self) -> None:
+        c = self._config
+        self.publisher.publish_config({"config_id": c["config_id"], "thresholds": c["thresholds"]})
+
+    def set_config(self, thresholds: Thresholds) -> dict:
+        with self._lock:
+            self._config = {"config_id": uuid.uuid4().hex, "thresholds": thresholds.model_dump(),
+                            "status": "pending", "detail": None, "sent_ts": self.clock()}
+            self._save_and_emit_config()
+            self._publish_config()
+            return self.get_config()
+
+    def on_connected(self) -> None:
+        with self._lock:
+            if self._config["config_id"]:
+                self._config["sent_ts"] = self.clock()
+                self._publish_config()
+
+    def on_config_ack(self, payload) -> bool:
+        try:
+            ack = ConfigAck.model_validate(_to_dict(payload))
+        except (ValueError, ValidationError) as e:
+            log.warning("invalid config ack: %s", e)
+            return False
+        with self._lock:
+            c = self._config
+            if ack.config_id != c["config_id"] or c["status"] not in ("pending", "timeout"):
+                return False
+            c["status"] = "applied" if ack.result == "ok" else "rejected"
+            c["detail"] = ack.detail
+            self._emit("config", self.get_config())
+            return True
 
     def _tick_config(self, now: float) -> None:
-        pass
+        c = self._config
+        if (c["status"] == "pending" and self._online and c["sent_ts"] is not None
+                and now - c["sent_ts"] > self.settings.cmd_timeout_s):
+            c["status"] = "timeout"
+            c["detail"] = "no ack from device"
+            self._emit("config", self.get_config())
