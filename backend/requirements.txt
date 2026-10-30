@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+paho-mqtt>=2
+pydantic>=2
+pytest
+httpx
