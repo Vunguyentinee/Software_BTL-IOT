@@ -124,8 +124,45 @@ class Service:
             self._tick_config(now)
 
     # ---- commands (Task 4) ---------------------------------------------
+    def send_command(self, device: str, action: str, source: str = "web") -> dict:
+        validate_command(device, action)
+        with self._lock:
+            if not self._online:
+                raise DeviceOffline("esp32 is offline")
+            cmd_id = uuid.uuid4().hex
+            rec = {"cmd_id": cmd_id, "device": device, "action": action, "source": source,
+                   "status": "pending", "sent_ts": self.clock(), "ack_ts": None,
+                   "detail": None, "ts": self.clock()}
+            self.storage.save_command(rec)
+            self.publisher.publish_cmd({"cmd_id": cmd_id, "device": device, "action": action})
+            self._emit("command", dict(rec))
+            return dict(rec)
+
+    def get_command(self, cmd_id: str) -> Optional[dict]:
+        return self.storage.get_command(cmd_id)
+
+    def _finish_command(self, cmd_id: str, status: str, detail: Optional[str]) -> Optional[dict]:
+        cur = self.storage.get_command(cmd_id)
+        if cur is None or cur["status"] != "pending":
+            return None
+        rec = self.storage.update_command(cmd_id, status=status, detail=detail,
+                                          ack_ts=None if status == "timeout" else self.clock())
+        self._emit("command", rec)
+        return rec
+
+    def on_cmd_ack(self, payload) -> bool:
+        try:
+            ack = CmdAck.model_validate(_to_dict(payload))
+        except (ValueError, ValidationError) as e:
+            log.warning("invalid cmd ack: %s", e)
+            return False
+        with self._lock:
+            return self._finish_command(ack.cmd_id, ack.result, ack.detail) is not None
+
     def _tick_commands(self, now: float) -> None:
-        pass
+        for c in self.storage.list_commands(1000):
+            if c["status"] == "pending" and now - c["sent_ts"] > self.settings.cmd_timeout_s:
+                self._finish_command(c["cmd_id"], "timeout", "no ack from device")
 
     # ---- config (Task 5) -----------------------------------------------
     def _initial_config(self) -> dict:
