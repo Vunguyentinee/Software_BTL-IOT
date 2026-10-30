@@ -1,0 +1,7 @@
+__pycache__/
+.venv/
+backend/data/
+.superpowers/
+*.pyc
+.pytest_cache/
+~$*
