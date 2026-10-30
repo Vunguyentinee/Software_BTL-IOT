@@ -1,5 +1,7 @@
 # Thiết kế: Backend và kết nối ESP32–Web (Người 4)
 
+> **Trạng thái (cập nhật 2026-10-31):** đã triển khai xong trên nhánh `feature/backend`. Phần "Cập nhật sau thiết kế" ở cuối tài liệu ghi những điểm đã thay đổi so với bản thiết kế ban đầu.
+
 Dự án: Digital Twin nhà thông minh (BTL IoT). Người phụ trách: Người 4. Người nhận bàn giao: Vũ.
 
 ## 1. Mục đích
@@ -17,7 +19,7 @@ Làm cầu nối giữa ESP32 (firmware C++ do Người 2, 3 viết) và website
 - Backend không tự quyết định bật/tắt thiết bị (không có rule engine ở backend).
 - Chưa có đăng nhập/tài khoản trong bản đầu.
 - Không triển khai cloud; không cần truy cập từ xa.
-- Không thiết kế database đầy đủ (việc của Người 5).
+- Không thiết kế database đầy đủ (việc của Người 5); backend chỉ cung cấp bản bảng đầu tiên để chạy trọn vẹn.
 - Không viết firmware hay giao diện web.
 
 **Điều cần tránh (anti-goal)**
@@ -37,7 +39,7 @@ Làm cầu nối giữa ESP32 (firmware C++ do Người 2, 3 viết) và website
 3. Web có cấu hình ngưỡng. Ngưỡng mới được **gửi xuống ESP32 và áp dụng ngay**.
 4. Lệnh thủ công **giữ hiệu lực đến khi người dùng chuyển lại chế độ tự động** (không tự hết hạn).
 5. Chưa cần đăng nhập.
-6. Lựa chọn database **để sau**; backend phải đặt lưu trữ sau một lớp trung gian.
+6. Lưu trữ đặt sau một lớp trung gian (`Storage`). *Cập nhật:* nhóm đã chọn **PostgreSQL**, chạy bằng Docker Compose (xem cuối tài liệu).
 7. Chỉ có **một ESP32** cho cả nhà (theo file đặc tả `Dac_ta_he_thong_nha_thong_minh_ESP32.docx`).
 8. Web điều khiển thủ công đúng 3 thiết bị: **LED1, quạt, cửa**. LED2, LED3, còi chỉ hiển thị. **Bơm** chỉ do ESP32 tự kích hoạt khi có khói, không có nút thủ công trên web.
 9. Có cảm biến khói/gas cho **giá trị analog** và có bơm (đặc tả ESP32 chưa liệt kê chân của hai thiết bị này). Ngưỡng khói chỉnh được trên web.
@@ -107,3 +109,13 @@ Dữ liệu đầy đủ cần lưu theo file tổng quan: cảm biến, trạng
 - Tài liệu API và MQTT (dựa trên mục 6, 7).
 - Script giả lập ESP32 và bộ test.
 - Sơ đồ luồng dữ liệu và lệnh.
+
+## 11. Cập nhật sau thiết kế
+
+Những thay đổi so với bản thiết kế ban đầu (ngày 2026-10-30):
+
+- **Database:** nhóm chọn **PostgreSQL**. `PostgresStorage` (`backend/app/pg_storage.py`) có bốn bảng `telemetry`, `events`, `commands`, `config`, tự tạo khi khởi động. Backend dùng PostgreSQL khi có biến `BTL_DATABASE_URL`; không có thì dùng `InMemoryStorage` (quyết định F). Bảng do backend dựng tạm để hệ thống chạy trọn vẹn; Người 5 có thể chỉnh lại.
+- **Cách chạy:** thay vì cài Mosquitto và Python tay, hệ thống chạy bằng **Docker Compose** (`docker-compose.yml`: `mosquitto`, `db`, `backend`, và `simulator` tùy chọn qua `--profile sim`). Hướng dẫn cho từng vai trò ở `README.md` gốc.
+- **Ngưỡng:** `smoke_high` = 2000 và `smoke_low` = 1500 là giá trị tạm do kế hoạch đặt, cần đo lại với cảm biến thật.
+- **Hành vi bổ sung:** ack ngưỡng đến muộn sau khi đã `timeout` vẫn được chấp nhận; thời gian chờ ack ngưỡng bắt đầu tính lại khi ESP32 online trở lại.
+- **Chưa làm / chưa kiểm tra:** chưa thử với ESP32 thật (firmware chưa có WiFi/MQTT); chưa có đăng nhập; lịch sử lệnh chưa giới hạn kích thước; chưa có truy vấn trung bình/min/max và xuất CSV (thuộc phần của Người 5).

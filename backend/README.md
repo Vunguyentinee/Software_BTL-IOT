@@ -3,6 +3,8 @@
 Nhận dữ liệu ESP32 qua MQTT, cung cấp REST/WebSocket cho web, gửi lệnh và ngưỡng xuống ESP32.
 Chi tiết giao thức: [docs/API_MQTT.md](docs/API_MQTT.md).
 
+> **Chạy cả hệ thống (khuyến nghị):** dùng Docker Compose theo [README gốc](../README.md). Tài liệu này dành cho người phát triển backend muốn chạy trực tiếp bằng Python (các mục 1–5), nên cần Mosquitto cài riêng hoặc chạy qua `docker compose up -d mosquitto`.
+
 ## 1. Cài đặt Python
 
 ```powershell
