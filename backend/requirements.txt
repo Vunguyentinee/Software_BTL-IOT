@@ -4,3 +4,5 @@ paho-mqtt>=2
 pydantic>=2
 pytest
 httpx
+psycopg[binary]>=3.2
+psycopg_pool>=3.2

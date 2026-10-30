@@ -5,3 +5,4 @@ backend/data/
 *.pyc
 .pytest_cache/
 ~$*
+.env

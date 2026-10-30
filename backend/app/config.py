@@ -10,6 +10,7 @@ class Settings:
     offline_timeout_s: float = 10.0
     cmd_timeout_s: float = 5.0
     data_file: str = "data/store.json"
+    database_url: str = ""  # rỗng = lưu trong bộ nhớ + file JSON
 
 
 def load_settings() -> Settings:
@@ -18,4 +19,5 @@ def load_settings() -> Settings:
     s.mqtt_port = int(os.environ.get("BTL_MQTT_PORT", s.mqtt_port))
     s.device_id = os.environ.get("BTL_DEVICE_ID", s.device_id)
     s.data_file = os.environ.get("BTL_DATA_FILE", s.data_file)
+    s.database_url = os.environ.get("BTL_DATABASE_URL", s.database_url)
     return s

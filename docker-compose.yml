@@ -1,0 +1,56 @@
+# Chạy cả hệ thống:  docker compose up -d --build
+# Kèm ESP32 giả lập:  docker compose --profile sim up -d --build
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-smarthome}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smarthome}
+      POSTGRES_DB: ${POSTGRES_DB:-smarthome}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      BTL_MQTT_HOST: mosquitto
+      BTL_MQTT_PORT: "1883"
+      BTL_DATABASE_URL: postgresql://${POSTGRES_USER:-smarthome}:${POSTGRES_PASSWORD:-smarthome}@db:5432/${POSTGRES_DB:-smarthome}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
+  simulator:
+    profiles: ["sim"]
+    build: ./backend
+    restart: unless-stopped
+    command: ["python", "-m", "simulator.fake_esp32", "--host", "mosquitto"]
+    depends_on:
+      - mosquitto
+      - backend
+
+volumes:
+  pgdata:
+  mosquitto-data:

@@ -12,7 +12,13 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 settings = load_settings()
-storage = InMemoryStorage(settings.data_file)
+if settings.database_url:
+    from .pg_storage import PostgresStorage
+    storage = PostgresStorage(settings.database_url)
+    log.info("storage: PostgreSQL")
+else:
+    storage = InMemoryStorage(settings.data_file)
+    log.info("storage: in-memory + %s", settings.data_file)
 hub = WsHub()
 
 

@@ -57,4 +57,17 @@ curl -X POST http://localhost:8000/api/devices/fan/command -H "content-type: app
 
 ## 6. Lưu trữ
 
-Hiện dùng `InMemoryStorage` (`app/storage.py`): lịch sử cảm biến nằm trong bộ nhớ (mất khi tắt backend), còn ngưỡng, lệnh và sự kiện được ghi ra `BTL_DATA_FILE`. Khi chọn database thật, viết một lớp cài đặt interface `Storage` rồi thay trong `app/main.py`.
+Backend chọn lớp lưu trữ theo biến môi trường `BTL_DATABASE_URL`:
+
+- **Có đặt** (ví dụ `postgresql://smarthome:smarthome@localhost:5432/smarthome`): dùng `PostgresStorage` (`app/pg_storage.py`), dữ liệu bền. Đây là cách chạy trong Docker Compose, xem [README gốc](../README.md).
+- **Không đặt**: dùng `InMemoryStorage` (`app/storage.py`): lịch sử cảm biến nằm trong bộ nhớ (mất khi tắt backend), còn ngưỡng, lệnh và sự kiện ghi ra `BTL_DATA_FILE`. Tiện để phát triển nhanh không cần database.
+
+Muốn đổi sang database khác, viết một lớp cài đặt interface `Storage` rồi chọn nó trong `app/main.py`.
+
+Test PostgreSQL chỉ chạy khi đặt `BTL_TEST_DATABASE_URL` trỏ tới một database dùng để thử (dữ liệu trong đó sẽ bị xóa), nếu không sẽ được bỏ qua:
+
+```powershell
+docker run -d --rm --name btl-testdb -e POSTGRES_PASSWORD=test -e POSTGRES_DB=smarthome_test -p 55432:5432 postgres:16
+$env:BTL_TEST_DATABASE_URL = "postgresql://postgres:test@localhost:55432/smarthome_test"
+.venv\Scripts\python -m pytest -q
+```
