@@ -425,6 +425,40 @@ def test_config_survives_new_connection(make):
     assert got["config_id"] == "k2" and got["thresholds"]["fan_on"] == 37
 
 
+def test_all_data_groups_survive_new_storage_instance(make):
+    writer = make()
+    marker_ts = 1_730_000_123.125
+    marker_cmd = "restart-proof-command"
+    marker_config = "restart-proof-config"
+
+    writer.save_telemetry(tel(marker_ts, 31.25, smoke_raw=777))
+    writer.save_event({"type": "pump", "state": "start", "value": 777.0,
+                       "threshold": 700.0, "reason": "restart-proof",
+                       "uptime_ms": 12345, "ts": marker_ts})
+    writer.save_command({"cmd_id": marker_cmd, "device": "fan", "action": "on",
+                         "source": "restart-test", "status": "ok",
+                         "sent_ts": marker_ts, "ack_ts": marker_ts + 1,
+                         "detail": "restart-proof", "ts": marker_ts})
+    writer.save_config({"config_id": marker_config,
+                        "thresholds": {"fan_on": 36, "fan_off": 34,
+                                       "heat_alarm_on": 40, "heat_alarm_off": 37,
+                                       "smoke_high": 2000, "smoke_low": 1500},
+                        "ts": marker_ts})
+
+    reader = make()
+    assert reader.history("temperature_c", marker_ts, marker_ts) == [
+        {"ts": marker_ts, "value": 31.25},
+    ]
+    event = next(e for e in reader.list_events(100)
+                 if e["reason"] == "restart-proof")
+    assert event["ts"] == marker_ts and event["value"] == 777.0
+    command = reader.get_command(marker_cmd)
+    assert command["status"] == "ok" and command["ack_ts"] == marker_ts + 1
+    config = reader.load_config()
+    assert config["config_id"] == marker_config
+    assert config["thresholds"]["smoke_high"] == 2000
+
+
 def test_service_works_on_postgres(make):
     from app.config import Settings
     from app.service import Service
