@@ -1,12 +1,19 @@
+import csv
+import io
 import json
 
 import pytest
 
-from app.storage import InMemoryStorage
+from app.storage import InMemoryStorage, iter_history_csv
 
 
 def tel(ts, temp):
     return {"ts": ts, "temperature_c": temp, "humidity_pct": 50.0}
+
+
+def read_csv(chunks):
+    text = b"".join(chunks).decode("utf-8")
+    return text, list(csv.DictReader(io.StringIO(text, newline="")))
 
 
 def test_history_filters_by_metric_and_time():
@@ -96,6 +103,83 @@ def test_history_page_rejects_invalid_metric_and_reversed_time_range():
         s.history_page("nope; drop table telemetry", None, None, 10, 0)
     with pytest.raises(ValueError, match="start must be less than or equal to end"):
         s.history_page("temperature_c", 200, 100, 10, 0)
+
+
+def test_iter_history_csv_uses_utf8_and_standard_escaping():
+    text, rows = read_csv(iter_history_csv([
+        {"ts": 1, "value": 'giá trị, "đặc biệt"\n'},
+    ]))
+
+    assert text.startswith("ts,value\r\n")
+    assert rows == [{"ts": "1.0", "value": 'giá trị, "đặc biệt"\n'}]
+
+
+def test_history_csv_empty_null_and_inclusive_bounds():
+    s = InMemoryStorage()
+    for ts, value in [(99.0, 1.0), (100.0, 2.0), (150.0, None),
+                      (200.0, 3.0), (201.0, 4.0)]:
+        s.save_telemetry(tel(ts, value))
+
+    assert b"".join(s.history_csv("temperature_c", 300, 400)) == b"ts,value\r\n"
+    _, rows = read_csv(s.history_csv("temperature_c", 100, 200, batch_size=2))
+    assert rows == [
+        {"ts": "100.0", "value": "2.0"},
+        {"ts": "200.0", "value": "3.0"},
+    ]
+
+
+def test_history_csv_many_rows_have_no_gaps_duplicates_or_late_writes():
+    s = InMemoryStorage()
+    for value in range(120):
+        s.save_telemetry(tel(1000.0 + value, float(value)))
+
+    export = s.history_csv("temperature_c", None, None, batch_size=17)
+    s.save_telemetry(tel(1050.0, 999.0))
+    _, rows = read_csv(export)
+
+    assert len(rows) == 120
+    assert [float(row["value"]) for row in rows] == list(map(float, range(120)))
+    assert len({(row["ts"], row["value"]) for row in rows}) == 120
+
+
+@pytest.mark.parametrize("batch_size", [1, 1000])
+def test_history_csv_batch_size_boundaries_with_empty_and_filtered_data(batch_size):
+    s = InMemoryStorage()
+    for ts, value in [(99.0, 1.0), (100.0, 2.0), (200.0, 3.0), (201.0, 4.0)]:
+        s.save_telemetry(tel(ts, value))
+
+    assert b"".join(s.history_csv(
+        "temperature_c", 300, 400, batch_size)) == b"ts,value\r\n"
+    _, rows = read_csv(s.history_csv("temperature_c", 100, 200, batch_size))
+    assert rows == [
+        {"ts": "100.0", "value": "2.0"},
+        {"ts": "200.0", "value": "3.0"},
+    ]
+
+
+def test_history_csv_normalizes_integer_and_float_timestamps():
+    integer_ts = InMemoryStorage()
+    float_ts = InMemoryStorage()
+    integer_ts.save_telemetry(tel(100, 2.0))
+    float_ts.save_telemetry(tel(100.0, 2.0))
+
+    integer_csv = b"".join(integer_ts.history_csv("temperature_c", None, None))
+    float_csv = b"".join(float_ts.history_csv("temperature_c", None, None))
+    assert integer_csv == float_csv == b"ts,value\r\n100.0,2.0\r\n"
+
+
+@pytest.mark.parametrize("bad_call", [
+    ("invalid", None, None, 1000),
+    ("temperature_c", 200, 100, 1000),
+    ("temperature_c", float("nan"), None, 1000),
+    ("temperature_c", None, float("inf"), 1000),
+    ("temperature_c", None, None, 0),
+    ("temperature_c", None, None, 1001),
+    ("temperature_c", None, None, True),
+])
+def test_history_csv_rejects_invalid_request(bad_call):
+    with pytest.raises(ValueError):
+        InMemoryStorage().history_csv(*bad_call)
 
 
 def test_history_stats_aggregates_non_null_values_with_inclusive_bounds():

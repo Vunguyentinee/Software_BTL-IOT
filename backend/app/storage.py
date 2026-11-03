@@ -1,9 +1,11 @@
+import csv
+import io
 import json
 import math
 import os
 import threading
 from collections import deque
-from typing import Optional, Protocol, TypedDict
+from typing import Iterable, Iterator, Optional, Protocol, TypedDict
 
 
 HISTORY_METRICS = frozenset({
@@ -48,6 +50,29 @@ def validate_history_page_request(metric: str, start: Optional[float],
         raise ValueError("offset must be a non-negative integer")
 
 
+def validate_history_csv_request(metric: str, start: Optional[float],
+                                 end: Optional[float], batch_size: int) -> None:
+    if metric not in HISTORY_METRICS:
+        raise ValueError(f"unsupported history metric: {metric}")
+    validate_history_time_range(start, end)
+    if (isinstance(batch_size, bool) or not isinstance(batch_size, int)
+            or not 1 <= batch_size <= 1000):
+        raise ValueError("batch_size must be an integer between 1 and 1000")
+
+
+def iter_history_csv(rows: Iterable[dict]) -> Iterator[bytes]:
+    """Encode history rows as UTF-8 CSV chunks without accumulating the output."""
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(("ts", "value"))
+    yield output.getvalue().encode("utf-8")
+    for row in rows:
+        output.seek(0)
+        output.truncate(0)
+        writer.writerow((float(row["ts"]), row["value"]))
+        yield output.getvalue().encode("utf-8")
+
+
 class Storage(Protocol):
     def save_telemetry(self, rec: dict) -> None: ...
     def save_event(self, rec: dict) -> None: ...
@@ -59,6 +84,8 @@ class Storage(Protocol):
     def history(self, metric: str, start: Optional[float], end: Optional[float]) -> list[dict]: ...
     def history_page(self, metric: str, start: Optional[float], end: Optional[float],
                      limit: int, offset: int) -> list[dict]: ...
+    def history_csv(self, metric: str, start: Optional[float], end: Optional[float],
+                    batch_size: int = 1000) -> Iterator[bytes]: ...
     def history_stats(self, metric: str, start: Optional[float],
                       end: Optional[float]) -> HistoryStats: ...
     def list_events(self, limit: int = 100) -> list[dict]: ...
@@ -167,6 +194,22 @@ class InMemoryStorage:
             {"ts": ts, "value": value}
             for ts, _, value in rows[offset:offset + limit]
         ]
+
+    def history_csv(self, metric: str, start: Optional[float], end: Optional[float],
+                    batch_size: int = 1000) -> Iterator[bytes]:
+        validate_history_csv_request(metric, start, end, batch_size)
+        # In-memory telemetry is already bounded by max_telemetry. Snapshot only
+        # the two exported fields so later writes cannot shift or duplicate rows.
+        with self._lock:
+            rows = [
+                {"ts": r["ts"], "value": r[metric], "write_order": write_order}
+                for write_order, r in enumerate(self._telemetry)
+                if r.get(metric) is not None
+                and (start is None or r["ts"] >= start)
+                and (end is None or r["ts"] <= end)
+            ]
+        rows.sort(key=lambda row: (row["ts"], row["write_order"]))
+        return iter_history_csv(rows)
 
     def history_stats(self, metric: str, start: Optional[float],
                       end: Optional[float]) -> HistoryStats:

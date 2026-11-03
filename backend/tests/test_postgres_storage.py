@@ -3,6 +3,8 @@
 Chỉ chạy khi đặt BTL_TEST_DATABASE_URL, ví dụ:
   postgresql://postgres:test@localhost:55432/smarthome_test
 """
+import csv
+import io
 import json
 import os
 from urllib.parse import urlparse
@@ -55,6 +57,11 @@ def tel(ts, temp, **extra):
             "modes": {"fan": "auto"}}
     base.update(extra)
     return base
+
+
+def read_csv(chunks):
+    text = b"".join(chunks).decode("utf-8")
+    return text, list(csv.DictReader(io.StringIO(text, newline="")))
 
 
 def test_history_filters_by_metric_and_time(make):
@@ -151,6 +158,155 @@ def test_history_page_validation_matches_in_memory(make):
         for args in invalid_calls:
             with pytest.raises(ValueError):
                 storage.history_page(*args)
+
+
+def test_history_csv_empty_null_bounds_and_format_match_in_memory(make):
+    from app.storage import InMemoryStorage
+
+    postgres = make()
+    memory = InMemoryStorage()
+    records = [
+        tel(99.0, 1.0), tel(100.0, 2.0), tel(150.0, None),
+        tel(200.0, 3.0), tel(201.0, 4.0),
+    ]
+    for rec in records:
+        postgres.save_telemetry(rec)
+        memory.save_telemetry(rec)
+
+    assert b"".join(postgres.history_csv("temperature_c", 300, 400)) == b"ts,value\r\n"
+    postgres_csv = b"".join(postgres.history_csv("temperature_c", 100, 200, 2))
+    memory_csv = b"".join(memory.history_csv("temperature_c", 100, 200, 2))
+    assert postgres_csv == memory_csv
+    _, rows = read_csv([postgres_csv])
+    assert rows == [
+        {"ts": "100.0", "value": "2.0"},
+        {"ts": "200.0", "value": "3.0"},
+    ]
+
+
+def test_history_csv_many_rows_match_postgres_without_gaps_or_duplicates(make):
+    postgres = make()
+    for value in range(120):
+        postgres.save_telemetry(tel(1000.0 + value, float(value)))
+
+    expected = postgres.history("temperature_c", None, None)
+    _, rows = read_csv(postgres.history_csv("temperature_c", None, None, batch_size=17))
+
+    parsed = [{"ts": float(row["ts"]), "value": float(row["value"])} for row in rows]
+    assert parsed == expected
+    assert len(parsed) == 120
+    assert len({(row["ts"], row["value"]) for row in parsed}) == 120
+
+
+def test_history_csv_equal_timestamps_cross_batch_without_gaps_or_duplicates(make):
+    postgres = make()
+    for value in range(1, 6):
+        postgres.save_telemetry(tel(100.0, float(value)))
+
+    _, rows = read_csv(postgres.history_csv(
+        "temperature_c", None, None, batch_size=2))
+    assert rows == [
+        {"ts": "100.0", "value": f"{value}.0"} for value in range(1, 6)
+    ]
+    assert len(rows) == len({(row["ts"], row["value"]) for row in rows}) == 5
+
+
+def test_history_csv_boolean_matches_in_memory_contract(make):
+    from app.storage import InMemoryStorage
+
+    postgres = make()
+    memory = InMemoryStorage()
+    for ts, value in [(100.0, False), (100.0, True), (101.0, False)]:
+        rec = tel(ts, 30.0, fan_on=value)
+        postgres.save_telemetry(rec)
+        memory.save_telemetry(rec)
+
+    postgres_csv = b"".join(postgres.history_csv("fan_on", None, None, batch_size=2))
+    assert postgres_csv == b"".join(memory.history_csv("fan_on", None, None, batch_size=2))
+    _, rows = read_csv([postgres_csv])
+    assert rows == [
+        {"ts": "100.0", "value": "False"},
+        {"ts": "100.0", "value": "True"},
+        {"ts": "101.0", "value": "False"},
+    ]
+
+
+@pytest.mark.parametrize("batch_size", [1, 1000])
+def test_history_csv_batch_size_boundaries_empty_and_filtered_match(make, batch_size):
+    from app.storage import InMemoryStorage
+
+    postgres = make()
+    memory = InMemoryStorage()
+    for ts, value in [(99.0, 1.0), (100.0, 2.0), (200.0, 3.0), (201.0, 4.0)]:
+        rec = tel(ts, value)
+        postgres.save_telemetry(rec)
+        memory.save_telemetry(rec)
+
+    postgres_empty = b"".join(postgres.history_csv(
+        "temperature_c", 300, 400, batch_size))
+    assert postgres_empty == b"".join(memory.history_csv(
+        "temperature_c", 300, 400, batch_size)) == b"ts,value\r\n"
+    postgres_csv = b"".join(postgres.history_csv(
+        "temperature_c", 100, 200, batch_size))
+    assert postgres_csv == b"".join(memory.history_csv(
+        "temperature_c", 100, 200, batch_size))
+
+
+def test_history_csv_integer_and_float_timestamp_inputs_match(make):
+    from app.storage import InMemoryStorage
+
+    postgres = make()
+    memory_int = InMemoryStorage()
+    memory_float = InMemoryStorage()
+    rec = tel(100, 2.0)
+    postgres.save_telemetry(rec)
+    memory_int.save_telemetry(rec)
+    memory_float.save_telemetry(tel(100.0, 2.0))
+
+    postgres_csv = b"".join(postgres.history_csv("temperature_c", None, None))
+    assert postgres_csv == b"".join(memory_int.history_csv("temperature_c", None, None))
+    assert postgres_csv == b"".join(memory_float.history_csv("temperature_c", None, None))
+    assert postgres_csv == b"ts,value\r\n100.0,2.0\r\n"
+
+
+def test_history_csv_snapshot_excludes_concurrent_late_writes_on_both_storages(make):
+    from app.storage import InMemoryStorage
+
+    postgres = make()
+    memory = InMemoryStorage()
+    for value in range(5):
+        rec = tel(100.0 + value, float(value))
+        postgres.save_telemetry(rec)
+        memory.save_telemetry(rec)
+
+    postgres_export = postgres.history_csv("temperature_c", None, None, batch_size=2)
+    memory_export = memory.history_csv("temperature_c", None, None, batch_size=2)
+    late = tel(102.0, 999.0)
+    postgres.save_telemetry(late)
+    memory.save_telemetry(late)
+
+    postgres_csv = b"".join(postgres_export)
+    assert postgres_csv == b"".join(memory_export)
+    _, rows = read_csv([postgres_csv])
+    assert [float(row["value"]) for row in rows] == list(map(float, range(5)))
+
+
+def test_history_csv_validation_matches_in_memory(make):
+    from app.storage import InMemoryStorage
+
+    storages = (InMemoryStorage(), make())
+    invalid_calls = [
+        ("invalid", None, None, 1000),
+        ("temperature_c", 200, 100, 1000),
+        ("temperature_c", float("nan"), None, 1000),
+        ("temperature_c", None, float("-inf"), 1000),
+        ("temperature_c", None, None, 0),
+        ("temperature_c", None, None, 1001),
+    ]
+    for storage in storages:
+        for args in invalid_calls:
+            with pytest.raises(ValueError):
+                storage.history_csv(*args)
 
 
 def test_history_stats_matches_in_memory(make):

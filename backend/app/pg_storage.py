@@ -5,13 +5,14 @@ trong database là timestamptz.
 """
 import logging
 import time
-from typing import Optional
+from typing import Iterator, Optional
 
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from .storage import (HISTORY_METRICS, HistoryStats, validate_history_page_request,
+from .storage import (HISTORY_METRICS, HistoryStats, iter_history_csv,
+                      validate_history_csv_request, validate_history_page_request,
                       validate_history_stats_request)
 
 log = logging.getLogger(__name__)
@@ -169,6 +170,46 @@ class PostgresStorage:
         args.extend([limit, offset])
         with self._pool.connection() as conn:
             return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+    def history_csv(self, metric: str, start: Optional[float], end: Optional[float],
+                    batch_size: int = 1000) -> Iterator[bytes]:
+        validate_history_csv_request(metric, start, end, batch_size)
+        with self._pool.connection() as conn:
+            snapshot_id = conn.execute(
+                "SELECT max(id) AS snapshot_id FROM telemetry").fetchone()["snapshot_id"]
+        rows = self._history_csv_rows(metric, start, end, batch_size, snapshot_id)
+        return iter_history_csv(rows)
+
+    def _history_csv_rows(self, column: str, start: Optional[float], end: Optional[float],
+                          batch_size: int, snapshot_id: Optional[int]) -> Iterator[dict]:
+        if snapshot_id is None:
+            return
+        cursor_ts = None
+        cursor_id = None
+        while True:
+            sql = (f"SELECT id AS cursor_id, ts AS cursor_ts, "
+                   f"extract(epoch from ts)::float8 AS ts, {column} AS value "
+                   f"FROM telemetry WHERE id <= %s AND {column} IS NOT NULL")
+            args: list = [snapshot_id]
+            if start is not None:
+                sql += " AND ts >= to_timestamp(%s)"
+                args.append(start)
+            if end is not None:
+                sql += " AND ts <= to_timestamp(%s)"
+                args.append(end)
+            if cursor_ts is not None:
+                sql += " AND (ts, id) > (%s, %s)"
+                args.extend([cursor_ts, cursor_id])
+            sql += " ORDER BY ts, id LIMIT %s"
+            args.append(batch_size)
+            with self._pool.connection() as conn:
+                batch = conn.execute(sql, args).fetchall()
+            if not batch:
+                return
+            for row in batch:
+                yield {"ts": row["ts"], "value": row["value"]}
+            cursor_ts = batch[-1]["cursor_ts"]
+            cursor_id = batch[-1]["cursor_id"]
 
     def history_stats(self, metric: str, start: Optional[float],
                       end: Optional[float]) -> HistoryStats:
