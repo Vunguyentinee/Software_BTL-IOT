@@ -6,6 +6,11 @@ from collections import deque
 from typing import Optional, Protocol, TypedDict
 
 
+HISTORY_METRICS = frozenset({
+    "temperature_c", "humidity_pct", "dht_ok", "pir_ready", "motion_detected",
+    "is_dark", "fan_on", "led1_on", "led2_on", "led3_on", "heat_alarm",
+    "uptime_ms", "smoke_raw", "smoke_alarm", "pump_on",
+})
 HISTORY_STATS_METRICS = frozenset({"temperature_c", "humidity_pct", "smoke_raw"})
 
 
@@ -16,16 +21,31 @@ class HistoryStats(TypedDict):
     max: Optional[float]
 
 
-def validate_history_stats_request(
-        metric: str, start: Optional[float], end: Optional[float]) -> None:
-    if metric not in HISTORY_STATS_METRICS:
-        raise ValueError(f"unsupported history stats metric: {metric}")
+def validate_history_time_range(start: Optional[float], end: Optional[float]) -> None:
     if start is not None and not math.isfinite(start):
         raise ValueError("start must be finite")
     if end is not None and not math.isfinite(end):
         raise ValueError("end must be finite")
     if start is not None and end is not None and start > end:
         raise ValueError("start must be less than or equal to end")
+
+
+def validate_history_stats_request(
+        metric: str, start: Optional[float], end: Optional[float]) -> None:
+    if metric not in HISTORY_STATS_METRICS:
+        raise ValueError(f"unsupported history stats metric: {metric}")
+    validate_history_time_range(start, end)
+
+
+def validate_history_page_request(metric: str, start: Optional[float],
+                                  end: Optional[float], limit: int, offset: int) -> None:
+    if metric not in HISTORY_METRICS:
+        raise ValueError(f"unsupported history metric: {metric}")
+    validate_history_time_range(start, end)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+        raise ValueError("limit must be an integer between 1 and 1000")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("offset must be a non-negative integer")
 
 
 class Storage(Protocol):
@@ -37,6 +57,8 @@ class Storage(Protocol):
     def save_config(self, rec: dict) -> None: ...
     def load_config(self) -> Optional[dict]: ...
     def history(self, metric: str, start: Optional[float], end: Optional[float]) -> list[dict]: ...
+    def history_page(self, metric: str, start: Optional[float], end: Optional[float],
+                     limit: int, offset: int) -> list[dict]: ...
     def history_stats(self, metric: str, start: Optional[float],
                       end: Optional[float]) -> HistoryStats: ...
     def list_events(self, limit: int = 100) -> list[dict]: ...
@@ -128,6 +150,23 @@ class InMemoryStorage:
                     continue
                 out.append({"ts": ts, "value": v})
             return out
+
+    def history_page(self, metric: str, start: Optional[float], end: Optional[float],
+                     limit: int, offset: int) -> list[dict]:
+        validate_history_page_request(metric, start, end, limit, offset)
+        with self._lock:
+            rows = [
+                (r["ts"], write_order, r[metric])
+                for write_order, r in enumerate(self._telemetry)
+                if r.get(metric) is not None
+                and (start is None or r["ts"] >= start)
+                and (end is None or r["ts"] <= end)
+            ]
+        rows.sort(key=lambda row: (row[0], row[1]))
+        return [
+            {"ts": ts, "value": value}
+            for ts, _, value in rows[offset:offset + limit]
+        ]
 
     def history_stats(self, metric: str, start: Optional[float],
                       end: Optional[float]) -> HistoryStats:

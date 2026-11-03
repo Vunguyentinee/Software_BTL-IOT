@@ -11,7 +11,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from .storage import HistoryStats, validate_history_stats_request
+from .storage import (HISTORY_METRICS, HistoryStats, validate_history_page_request,
+                      validate_history_stats_request)
 
 log = logging.getLogger(__name__)
 
@@ -78,8 +79,6 @@ TELEMETRY_COLS = [
     "smoke_raw", "smoke_alarm", "pump_on",
 ]
 # chỉ các cột này được truy vấn lịch sử (tên cột không bao giờ lấy trực tiếp từ người dùng)
-HISTORY_METRICS = set(TELEMETRY_COLS) - {"door_command"}
-
 # Column names and predicates are constants, never SQL supplied by a caller.
 # PostgreSQL integer columns cannot contain non-finite values; float8 columns can.
 HISTORY_STATS_SQL = {
@@ -150,6 +149,24 @@ class PostgresStorage:
             sql += " AND ts <= to_timestamp(%s)"
             args.append(end)
         sql += " ORDER BY ts, id"
+        with self._pool.connection() as conn:
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+    def history_page(self, metric: str, start: Optional[float], end: Optional[float],
+                     limit: int, offset: int) -> list[dict]:
+        validate_history_page_request(metric, start, end, limit, offset)
+        column = metric  # Safe after the shared allowlist validation above.
+        sql = (f"SELECT extract(epoch from ts)::float8 AS ts, {column} AS value "
+               f"FROM telemetry WHERE {column} IS NOT NULL")
+        args: list = []
+        if start is not None:
+            sql += " AND ts >= to_timestamp(%s)"
+            args.append(start)
+        if end is not None:
+            sql += " AND ts <= to_timestamp(%s)"
+            args.append(end)
+        sql += " ORDER BY ts, id LIMIT %s OFFSET %s"
+        args.extend([limit, offset])
         with self._pool.connection() as conn:
             return [dict(r) for r in conn.execute(sql, args).fetchall()]
 

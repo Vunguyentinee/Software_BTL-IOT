@@ -25,6 +25,79 @@ def test_history_skips_null_values():
     assert [p["ts"] for p in s.history("temperature_c", None, None)] == [200]
 
 
+def test_history_page_reads_120_records_in_five_pages_without_gaps():
+    s = InMemoryStorage()
+    for value in range(120):
+        s.save_telemetry(tel(1000 + value, value))
+
+    pages = [s.history_page("temperature_c", None, None, 25, offset)
+             for offset in range(0, 125, 25)]
+    combined = [point for page in pages for point in page]
+
+    assert [len(page) for page in pages] == [25, 25, 25, 25, 20]
+    assert combined == [{"ts": 1000 + value, "value": value} for value in range(120)]
+
+
+def test_history_page_orders_equal_timestamps_by_write_order():
+    s = InMemoryStorage()
+    for ts, value in [(200, 4), (100, 1), (100, 2), (100, 3), (200, 5)]:
+        s.save_telemetry(tel(ts, value))
+
+    assert s.history_page("temperature_c", None, None, 10, 0) == [
+        {"ts": 100, "value": 1},
+        {"ts": 100, "value": 2},
+        {"ts": 100, "value": 3},
+        {"ts": 200, "value": 4},
+        {"ts": 200, "value": 5},
+    ]
+
+
+def test_history_page_handles_null_inclusive_bounds_boolean_and_empty_page():
+    s = InMemoryStorage()
+    records = [
+        {"ts": 99, "temperature_c": 1, "fan_on": False},
+        {"ts": 100, "temperature_c": 2, "fan_on": False},
+        {"ts": 150, "temperature_c": None, "fan_on": True},
+        {"ts": 200, "temperature_c": 3, "fan_on": True},
+        {"ts": 201, "temperature_c": 4, "fan_on": False},
+    ]
+    for rec in records:
+        s.save_telemetry(rec)
+
+    assert s.history_page("temperature_c", 100, 200, 10, 0) == [
+        {"ts": 100, "value": 2}, {"ts": 200, "value": 3},
+    ]
+    assert s.history_page("fan_on", 100, 200, 10, 0) == [
+        {"ts": 100, "value": False}, {"ts": 150, "value": True},
+        {"ts": 200, "value": True},
+    ]
+    assert s.history_page("temperature_c", None, None, 10, 99) == []
+
+
+@pytest.mark.parametrize("limit,offset", [(0, 0), (1001, 0), (1.5, 0), (True, 0),
+                                           (1, -1), (1, 1.5), (1, True)])
+def test_history_page_rejects_invalid_pagination(limit, offset):
+    with pytest.raises(ValueError):
+        InMemoryStorage().history_page("temperature_c", None, None, limit, offset)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("bound", ["start", "end"])
+def test_history_page_rejects_non_finite_time_bounds(bad, bound):
+    args = {"start": None, "end": None}
+    args[bound] = bad
+    with pytest.raises(ValueError, match=f"{bound} must be finite"):
+        InMemoryStorage().history_page("temperature_c", limit=10, offset=0, **args)
+
+
+def test_history_page_rejects_invalid_metric_and_reversed_time_range():
+    s = InMemoryStorage()
+    with pytest.raises(ValueError, match="unsupported history metric"):
+        s.history_page("nope; drop table telemetry", None, None, 10, 0)
+    with pytest.raises(ValueError, match="start must be less than or equal to end"):
+        s.history_page("temperature_c", 200, 100, 10, 0)
+
+
 def test_history_stats_aggregates_non_null_values_with_inclusive_bounds():
     s = InMemoryStorage()
     for ts, value in [(100, 30), (200, 35), (300, 40), (400, 45)]:

@@ -81,6 +81,78 @@ def test_smoke_history_and_bool_metric(make):
     assert s.history("smoke_raw", None, None) == [{"ts": 200, "value": 450}]
 
 
+def test_history_page_reads_120_records_in_five_pages_and_matches_in_memory(make):
+    from app.storage import InMemoryStorage
+
+    postgres = make()
+    memory = InMemoryStorage()
+    for value in range(120):
+        rec = tel(1000 + value, value)
+        postgres.save_telemetry(rec)
+        memory.save_telemetry(rec)
+
+    postgres_pages = [postgres.history_page("temperature_c", None, None, 25, offset)
+                      for offset in range(0, 125, 25)]
+    memory_pages = [memory.history_page("temperature_c", None, None, 25, offset)
+                    for offset in range(0, 125, 25)]
+    combined = [point for page in postgres_pages for point in page]
+
+    assert [len(page) for page in postgres_pages] == [25, 25, 25, 25, 20]
+    assert postgres_pages == memory_pages
+    assert combined == postgres.history("temperature_c", None, None)
+
+
+def test_history_page_stable_order_null_bounds_boolean_and_empty_match(make):
+    from app.storage import InMemoryStorage
+
+    postgres = make()
+    memory = InMemoryStorage()
+    records = [
+        tel(200, 4, fan_on=True),
+        tel(100, 1, fan_on=False),
+        tel(100, None, fan_on=True),
+        tel(100, 2, fan_on=False),
+        tel(200, 5, fan_on=True),
+        tel(201, 6, fan_on=False),
+    ]
+    for rec in records:
+        postgres.save_telemetry(rec)
+        memory.save_telemetry(rec)
+
+    for storage in (memory, postgres):
+        assert storage.history_page("temperature_c", 100, 200, 10, 0) == [
+            {"ts": 100, "value": 1}, {"ts": 100, "value": 2},
+            {"ts": 200, "value": 4}, {"ts": 200, "value": 5},
+        ]
+        assert storage.history_page("fan_on", 100, 100, 10, 0) == [
+            {"ts": 100, "value": False}, {"ts": 100, "value": True},
+            {"ts": 100, "value": False},
+        ]
+        assert storage.history_page("temperature_c", None, None, 10, 99) == []
+
+
+def test_history_page_validation_matches_in_memory(make):
+    from app.storage import InMemoryStorage
+
+    storages = (InMemoryStorage(), make())
+    invalid_calls = [
+        ("temperature_c", None, None, 0, 0),
+        ("temperature_c", None, None, 1001, 0),
+        ("temperature_c", None, None, 10, -1),
+        ("temperature_c", 200, 100, 10, 0),
+        ("nope; drop table telemetry", None, None, 10, 0),
+    ]
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        invalid_calls.extend([
+            ("temperature_c", bad, None, 10, 0),
+            ("temperature_c", None, bad, 10, 0),
+        ])
+    for storage in storages:
+        for args in invalid_calls:
+            with pytest.raises(ValueError):
+                storage.history_page(*args)
+
+
 def test_history_stats_matches_in_memory(make):
     from app.storage import InMemoryStorage
 
