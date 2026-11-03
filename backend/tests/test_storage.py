@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from app.storage import InMemoryStorage
 
 
@@ -19,6 +23,68 @@ def test_history_skips_null_values():
     s.save_telemetry(tel(100, None))
     s.save_telemetry(tel(200, 30))
     assert [p["ts"] for p in s.history("temperature_c", None, None)] == [200]
+
+
+def test_history_stats_aggregates_non_null_values_with_inclusive_bounds():
+    s = InMemoryStorage()
+    for ts, value in [(100, 30), (200, 35), (300, 40), (400, 45)]:
+        s.save_telemetry(tel(ts, value))
+
+    assert s.history_stats("temperature_c", 100, 400) == {
+        "count": 4, "avg": 37.5, "min": 30.0, "max": 45.0,
+    }
+
+
+def test_history_stats_skips_non_finite_values_and_is_json_serializable():
+    s = InMemoryStorage()
+    values = [30, 35, 40, None, float("nan"), float("inf"), float("-inf")]
+    for ts, value in enumerate(values, start=1):
+        s.save_telemetry(tel(ts, value))
+
+    stats = s.history_stats("temperature_c", None, None)
+    assert stats == {"count": 3, "avg": 35.0, "min": 30.0, "max": 40.0}
+    assert isinstance(stats["count"], int)
+    assert all(isinstance(stats[key], float) for key in ("avg", "min", "max"))
+    json.dumps(stats, allow_nan=False)
+
+
+def test_history_stats_empty_range_and_all_null_values():
+    s = InMemoryStorage()
+    for ts, value in enumerate(
+            [None, float("nan"), float("inf"), float("-inf")], start=100):
+        s.save_telemetry(tel(ts, value))
+    empty = {"count": 0, "avg": None, "min": None, "max": None}
+    assert s.history_stats("temperature_c", None, None) == empty
+    assert s.history_stats("humidity_pct", 200, 300) == empty
+
+
+def test_history_stats_rejects_invalid_metric_and_time_range():
+    s = InMemoryStorage()
+    with pytest.raises(ValueError, match="unsupported history stats metric"):
+        s.history_stats("nope; drop table telemetry", None, None)
+    with pytest.raises(ValueError, match="start must be less than or equal to end"):
+        s.history_stats("smoke_raw", 200, 100)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("bound", ["start", "end"])
+def test_history_stats_rejects_non_finite_time_bounds(bad, bound):
+    s = InMemoryStorage()
+    args = {"start": None, "end": None}
+    args[bound] = bad
+    with pytest.raises(ValueError, match=f"{bound} must be finite"):
+        s.history_stats("temperature_c", **args)
+
+
+def test_history_stats_smoke_values_are_normalized_to_float():
+    s = InMemoryStorage()
+    for ts, value in [(1, 300), (2, 350), (3, 400)]:
+        s.save_telemetry({"ts": ts, "smoke_raw": value})
+
+    stats = s.history_stats("smoke_raw", None, None)
+    assert stats == {"count": 3, "avg": 350.0, "min": 300.0, "max": 400.0}
+    assert isinstance(stats["count"], int)
+    assert all(isinstance(stats[key], float) for key in ("avg", "min", "max"))
 
 
 def test_telemetry_cap():

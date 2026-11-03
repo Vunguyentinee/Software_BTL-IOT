@@ -3,12 +3,29 @@
 Chỉ chạy khi đặt BTL_TEST_DATABASE_URL, ví dụ:
   postgresql://postgres:test@localhost:55432/smarthome_test
 """
+import json
 import os
+from urllib.parse import urlparse
 
 import pytest
 
 URL = os.environ.get("BTL_TEST_DATABASE_URL")
-pytestmark = pytest.mark.skipif(not URL, reason="BTL_TEST_DATABASE_URL not set")
+
+
+def _is_allowed_test_database(url):
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        return parsed.port == 55432 and parsed.path.rstrip("/") == "/smarthome_test"
+    except ValueError:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _is_allowed_test_database(URL),
+    reason="BTL_TEST_DATABASE_URL must target smarthome_test on port 55432",
+)
 
 
 @pytest.fixture
@@ -62,6 +79,88 @@ def test_smoke_history_and_bool_metric(make):
     s.save_telemetry(tel(100, 30, smoke_raw=None))
     s.save_telemetry(tel(200, 30, smoke_raw=450))
     assert s.history("smoke_raw", None, None) == [{"ts": 200, "value": 450}]
+
+
+def test_history_stats_matches_in_memory(make):
+    from app.storage import InMemoryStorage
+
+    postgres = make()
+    memory = InMemoryStorage()
+    records = [
+        tel(100, 30, humidity_pct=30, smoke_raw=300),
+        tel(200, 35, humidity_pct=35, smoke_raw=350),
+        tel(300, 40, humidity_pct=40, smoke_raw=400),
+        tel(400, 45, humidity_pct=45, smoke_raw=450),
+    ]
+    for rec in records:
+        postgres.save_telemetry(rec)
+        memory.save_telemetry(rec)
+
+    expected = {"count": 4, "avg": 37.5, "min": 30.0, "max": 45.0}
+    for metric in ("temperature_c", "humidity_pct"):
+        assert postgres.history_stats(metric, 100, 400) == expected
+        assert postgres.history_stats(metric, 100, 400) == memory.history_stats(
+            metric, 100, 400)
+    smoke_stats = postgres.history_stats("smoke_raw", 100, 400)
+    assert smoke_stats == memory.history_stats("smoke_raw", 100, 400)
+    assert isinstance(smoke_stats["count"], int)
+    assert all(isinstance(smoke_stats[key], float) for key in ("avg", "min", "max"))
+
+
+def test_history_stats_skips_non_finite_values_and_matches_in_memory(make):
+    from app.storage import InMemoryStorage
+
+    postgres = make()
+    memory = InMemoryStorage()
+    values = [30, 35, 40, None, float("nan"), float("inf"), float("-inf")]
+    for ts, value in enumerate(values, start=1):
+        rec = tel(ts, value, humidity_pct=value)
+        postgres.save_telemetry(rec)
+        memory.save_telemetry(rec)
+
+    expected = {"count": 3, "avg": 35.0, "min": 30.0, "max": 40.0}
+    for metric in ("temperature_c", "humidity_pct"):
+        postgres_stats = postgres.history_stats(metric, None, None)
+        assert postgres_stats == expected
+        assert postgres_stats == memory.history_stats(metric, None, None)
+        assert isinstance(postgres_stats["count"], int)
+        assert all(isinstance(postgres_stats[key], float)
+                   for key in ("avg", "min", "max"))
+        json.dumps(postgres_stats, allow_nan=False)
+
+
+def test_history_stats_empty_null_and_validation_match_in_memory(make):
+    from app.storage import InMemoryStorage
+
+    postgres = make()
+    memory = InMemoryStorage()
+    values = [None, float("nan"), float("inf"), float("-inf")]
+    for ts, value in enumerate(values, start=100):
+        rec = tel(ts, value, humidity_pct=value, smoke_raw=None)
+        postgres.save_telemetry(rec)
+        memory.save_telemetry(rec)
+
+    empty = {"count": 0, "avg": None, "min": None, "max": None}
+    for storage in (memory, postgres):
+        assert storage.history_stats("temperature_c", None, None) == empty
+        assert storage.history_stats("humidity_pct", None, None) == empty
+        with pytest.raises(ValueError, match="unsupported history stats metric"):
+            storage.history_stats("nope; drop table telemetry", None, None)
+        with pytest.raises(ValueError, match="start must be less than or equal to end"):
+            storage.history_stats("smoke_raw", 200, 100)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("bound", ["start", "end"])
+def test_history_stats_rejects_non_finite_time_bounds_on_both_storages(make, bad, bound):
+    from app.storage import InMemoryStorage
+
+    storages = (InMemoryStorage(), make())
+    args = {"start": None, "end": None}
+    args[bound] = bad
+    for storage in storages:
+        with pytest.raises(ValueError, match=f"{bound} must be finite"):
+            storage.history_stats("temperature_c", **args)
 
 
 def test_command_roundtrip(make):

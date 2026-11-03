@@ -1,8 +1,31 @@
 import json
+import math
 import os
 import threading
 from collections import deque
-from typing import Optional, Protocol
+from typing import Optional, Protocol, TypedDict
+
+
+HISTORY_STATS_METRICS = frozenset({"temperature_c", "humidity_pct", "smoke_raw"})
+
+
+class HistoryStats(TypedDict):
+    count: int
+    avg: Optional[float]
+    min: Optional[float]
+    max: Optional[float]
+
+
+def validate_history_stats_request(
+        metric: str, start: Optional[float], end: Optional[float]) -> None:
+    if metric not in HISTORY_STATS_METRICS:
+        raise ValueError(f"unsupported history stats metric: {metric}")
+    if start is not None and not math.isfinite(start):
+        raise ValueError("start must be finite")
+    if end is not None and not math.isfinite(end):
+        raise ValueError("end must be finite")
+    if start is not None and end is not None and start > end:
+        raise ValueError("start must be less than or equal to end")
 
 
 class Storage(Protocol):
@@ -14,6 +37,8 @@ class Storage(Protocol):
     def save_config(self, rec: dict) -> None: ...
     def load_config(self) -> Optional[dict]: ...
     def history(self, metric: str, start: Optional[float], end: Optional[float]) -> list[dict]: ...
+    def history_stats(self, metric: str, start: Optional[float],
+                      end: Optional[float]) -> HistoryStats: ...
     def list_events(self, limit: int = 100) -> list[dict]: ...
     def list_commands(self, limit: int = 100) -> list[dict]: ...
 
@@ -103,6 +128,28 @@ class InMemoryStorage:
                     continue
                 out.append({"ts": ts, "value": v})
             return out
+
+    def history_stats(self, metric: str, start: Optional[float],
+                      end: Optional[float]) -> HistoryStats:
+        validate_history_stats_request(metric, start, end)
+        with self._lock:
+            values = [
+                value
+                for r in self._telemetry
+                if (value := r.get(metric)) is not None
+                and math.isfinite(value)
+                and (start is None or r["ts"] >= start)
+                and (end is None or r["ts"] <= end)
+            ]
+        if not values:
+            return {"count": 0, "avg": None, "min": None, "max": None}
+        count = len(values)
+        return {
+            "count": count,
+            "avg": float(sum(value / count for value in values)),
+            "min": float(min(values)),
+            "max": float(max(values)),
+        }
 
     def list_events(self, limit: int = 100) -> list[dict]:
         with self._lock:

@@ -11,6 +11,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+from .storage import HistoryStats, validate_history_stats_request
+
 log = logging.getLogger(__name__)
 
 SCHEMA = """
@@ -78,6 +80,20 @@ TELEMETRY_COLS = [
 # chỉ các cột này được truy vấn lịch sử (tên cột không bao giờ lấy trực tiếp từ người dùng)
 HISTORY_METRICS = set(TELEMETRY_COLS) - {"door_command"}
 
+# Column names and predicates are constants, never SQL supplied by a caller.
+# PostgreSQL integer columns cannot contain non-finite values; float8 columns can.
+HISTORY_STATS_SQL = {
+    "temperature_c": (
+        "temperature_c",
+        "temperature_c NOT IN ('NaN'::float8, 'Infinity'::float8, '-Infinity'::float8)",
+    ),
+    "humidity_pct": (
+        "humidity_pct",
+        "humidity_pct NOT IN ('NaN'::float8, 'Infinity'::float8, '-Infinity'::float8)",
+    ),
+    "smoke_raw": ("smoke_raw", "TRUE"),
+}
+
 COMMAND_COLS = ["cmd_id", "device", "action", "source", "status", "detail"]
 COMMAND_UPDATABLE = {"status", "detail", "ack_ts"}
 CMD_SELECT = ("cmd_id, device, action, source, status, detail, "
@@ -136,6 +152,24 @@ class PostgresStorage:
         sql += " ORDER BY ts, id"
         with self._pool.connection() as conn:
             return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+    def history_stats(self, metric: str, start: Optional[float],
+                      end: Optional[float]) -> HistoryStats:
+        validate_history_stats_request(metric, start, end)
+        column, finite_predicate = HISTORY_STATS_SQL[metric]
+        sql = (f"SELECT count({column})::bigint AS count, "
+               f"avg({column}::numeric)::float8 AS avg, min({column})::float8 AS min, "
+               f"max({column})::float8 AS max FROM telemetry "
+               f"WHERE {column} IS NOT NULL AND {finite_predicate}")
+        args: list = []
+        if start is not None:
+            sql += " AND ts >= to_timestamp(%s)"
+            args.append(start)
+        if end is not None:
+            sql += " AND ts <= to_timestamp(%s)"
+            args.append(end)
+        with self._pool.connection() as conn:
+            return dict(conn.execute(sql, args).fetchone())
 
     # ---- events --------------------------------------------------------
     def save_event(self, rec: dict) -> None:
