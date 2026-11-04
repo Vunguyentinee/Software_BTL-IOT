@@ -32,6 +32,9 @@ class _LatePublisher:
     def publish_config(self, payload):
         self.target.publish_config(payload)
 
+    def publish_sim_scenario(self, payload):
+        self.target.publish_sim_scenario(payload)
+
 
 _pub = _LatePublisher()
 service = Service(settings, storage, _pub, broadcast=hub.threadsafe_broadcast)

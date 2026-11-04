@@ -190,3 +190,37 @@ def test_history_csv_invalid_is_422_before_streaming(client, params):
     r = client.get("/api/history.csv", params=params)
     assert r.status_code == 422
     assert r.headers["content-type"].startswith("application/json")
+
+
+# ---- điều khiển kịch bản ESP32 giả -----------------------------------------
+_SIM = {"active": True, "scenario": "normal",
+        "scenarios": [{"id": "normal", "label": "Bình thường"}, {"id": "smoke_danger", "label": "Khói/cháy"}]}
+
+
+def test_get_sim_when_inactive(client):
+    assert client.get("/api/sim").json() == {"active": False, "scenario": None, "scenarios": []}
+
+
+def test_get_sim_when_active(client, service):
+    service.on_sim_state(_SIM)
+    assert client.get("/api/sim").json() == _SIM
+
+
+def test_post_sim_scenario_publishes(client, service, publisher):
+    service.on_sim_state(_SIM)
+    r = client.post("/api/sim/scenario", json={"scenario": "smoke_danger"})
+    assert r.status_code == 200 and r.json()["requested"] == "smoke_danger"
+    assert publisher.sim_scenarios == [{"scenario": "smoke_danger"}]
+
+
+def test_post_sim_scenario_without_simulator_is_409(client, publisher):
+    r = client.post("/api/sim/scenario", json={"scenario": "normal"})
+    assert r.status_code == 409 and r.json()["detail"] == "simulator_not_active"
+    assert publisher.sim_scenarios == []
+
+
+def test_post_sim_scenario_unknown_is_422(client, service, publisher):
+    service.on_sim_state(_SIM)
+    assert client.post("/api/sim/scenario", json={"scenario": "lava"}).status_code == 422
+    assert client.post("/api/sim/scenario", json={}).status_code == 422
+    assert publisher.sim_scenarios == []

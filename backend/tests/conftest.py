@@ -28,12 +28,16 @@ class FakePublisher:
     def __init__(self):
         self.cmds = []
         self.configs = []
+        self.sim_scenarios = []
 
     def publish_cmd(self, payload):
         self.cmds.append(payload)
 
     def publish_config(self, payload):
         self.configs.append(payload)
+
+    def publish_sim_scenario(self, payload):
+        self.sim_scenarios.append(payload)
 
 
 @pytest.fixture

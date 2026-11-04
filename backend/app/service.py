@@ -17,10 +17,18 @@ log = logging.getLogger(__name__)
 class Publisher(Protocol):
     def publish_cmd(self, payload: dict) -> None: ...
     def publish_config(self, payload: dict) -> None: ...
+    def publish_sim_scenario(self, payload: dict) -> None: ...
 
 
 class DeviceOffline(Exception):
     pass
+
+
+class SimulatorNotActive(Exception):
+    pass
+
+
+SIM_TIMEOUT_S = 15.0  # quá lâu không có nhịp tim từ simulator thì coi như đã dừng
 
 
 def _to_dict(payload) -> dict:
@@ -47,6 +55,9 @@ class Service:
         self._offline_since: Optional[float] = None
         self._telemetry: Optional[dict] = None
         self._config: dict = self._initial_config()
+        self._sim: Optional[dict] = None
+        self._sim_ts: Optional[float] = None
+        self._sim_emitted: Optional[dict] = None
 
     # ---- helpers -------------------------------------------------------
     def _emit(self, kind: str, data: dict) -> None:
@@ -124,6 +135,7 @@ class Service:
                 self._set_online(False)
             self._tick_commands(now)
             self._tick_config(now)
+            self._emit_sim_if_changed()
 
     # ---- commands (Task 4) ---------------------------------------------
     def send_command(self, device: str, action: str, source: str = "web") -> dict:
@@ -228,3 +240,47 @@ class Service:
             c["status"] = "timeout"
             c["detail"] = "no ack from device"
             self._emit("config", self.get_config())
+
+    # ---- ESP32 giả lập (kịch bản) ----------------------------------------
+    def on_sim_state(self, payload) -> bool:
+        """Simulator báo đang chạy (retained, kèm nhịp tim) hoặc đã dừng."""
+        try:
+            data = _to_dict(payload)
+            active = data["active"]
+            scenarios = data.get("scenarios", [])
+            if not isinstance(active, bool) or not isinstance(scenarios, list):
+                raise ValueError("bad sim state")
+            scenarios = [{"id": str(x["id"]), "label": str(x["label"])} for x in scenarios]
+        except (ValueError, KeyError, TypeError) as e:
+            log.warning("invalid sim state: %s", e)
+            return False
+        with self._lock:
+            self._sim = {"active": active, "scenario": data.get("scenario"), "scenarios": scenarios}
+            self._sim_ts = self.clock()
+            self._emit_sim_if_changed()
+        return True
+
+    def get_sim(self) -> dict:
+        with self._lock:
+            sim = self._sim
+            alive = (sim is not None and sim["active"] and self._sim_ts is not None
+                     and self.clock() - self._sim_ts <= SIM_TIMEOUT_S)
+            if not alive:
+                return {"active": False, "scenario": None, "scenarios": []}
+            return {"active": True, "scenario": sim["scenario"], "scenarios": list(sim["scenarios"])}
+
+    def _emit_sim_if_changed(self) -> None:
+        current = self.get_sim()
+        if current != self._sim_emitted:
+            self._sim_emitted = current
+            self._emit("sim", current)
+
+    def set_sim_scenario(self, scenario: str) -> None:
+        with self._lock:
+            sim = self.get_sim()
+            if not sim["active"]:
+                raise SimulatorNotActive("simulator is not running")
+            if scenario not in {x["id"] for x in sim["scenarios"]}:
+                raise ValueError(f"unknown scenario: {scenario}")
+            self.publisher.publish_sim_scenario({"scenario": scenario})
+

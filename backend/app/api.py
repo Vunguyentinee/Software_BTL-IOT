@@ -8,8 +8,8 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from .models import CommandRequest, Telemetry, Thresholds
-from .service import DeviceOffline, Service
+from .models import CommandRequest, ScenarioRequest, Telemetry, Thresholds
+from .service import DeviceOffline, Service, SimulatorNotActive
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +149,21 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
     @app.put("/api/config")
     def put_config(thresholds: Thresholds):
         return service.set_config(thresholds)
+
+    @app.get("/api/sim")
+    def get_sim():
+        return service.get_sim()
+
+    @app.post("/api/sim/scenario")
+    def set_sim_scenario(body: ScenarioRequest):
+        try:
+            service.set_sim_scenario(body.scenario)
+        except SimulatorNotActive:
+            raise HTTPException(409, "simulator_not_active")
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        # Kịch bản thực sự đổi khi simulator xác nhận (tin `sim` qua WebSocket)
+        return {"requested": body.scenario, **service.get_sim()}
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket):

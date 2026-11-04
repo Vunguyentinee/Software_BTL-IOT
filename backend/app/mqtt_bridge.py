@@ -5,13 +5,14 @@ from .config import Settings
 
 log = logging.getLogger(__name__)
 
-SUBSCRIBE_SUFFIXES = ["telemetry", "event", "cmd/ack", "config/ack", "status"]
+SUBSCRIBE_SUFFIXES = ["telemetry", "event", "cmd/ack", "config/ack", "status", "sim/state"]
 ROUTES = {
     "telemetry": "on_telemetry",
     "event": "on_event",
     "status": "on_status",
     "cmd/ack": "on_cmd_ack",
     "config/ack": "on_config_ack",
+    "sim/state": "on_sim_state",
 }
 
 
@@ -72,3 +73,7 @@ class MqttBridge:
 
     def publish_config(self, payload: dict) -> None:
         self.client.publish(self.prefix + "config/set", json.dumps(payload), qos=1, retain=True)
+
+    def publish_sim_scenario(self, payload: dict) -> None:
+        self.client.publish(self.prefix + "sim/scenario", json.dumps(payload), qos=1, retain=False)
+

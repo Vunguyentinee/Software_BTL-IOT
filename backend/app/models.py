@@ -83,6 +83,10 @@ class CommandRequest(BaseModel):
     action: str
 
 
+class ScenarioRequest(BaseModel):
+    scenario: str
+
+
 def validate_command(device: str, action: str) -> None:
     if device not in DEVICES:
         raise ValueError(f"unknown device: {device}")

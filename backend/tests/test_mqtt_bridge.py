@@ -64,7 +64,7 @@ def test_handle_message_routes_by_topic():
     b, svc, _ = make()
     for suffix, fn in [("telemetry", "on_telemetry"), ("event", "on_event"),
                        ("status", "on_status"), ("cmd/ack", "on_cmd_ack"),
-                       ("config/ack", "on_config_ack")]:
+                       ("config/ack", "on_config_ack"), ("sim/state", "on_sim_state")]:
         b.handle_message(P + suffix, b"{}")
         assert svc.calls[-1] == (fn, b"{}")
 
@@ -103,7 +103,7 @@ def test_on_connect_subscribes_and_notifies_service():
     assert c.started
     c.on_connect(c, None, None, 0, None)
     assert sorted(c.subscribed) == sorted(P + t for t in
-                                          ["telemetry", "event", "cmd/ack", "config/ack", "status"])
+                                          ["telemetry", "event", "cmd/ack", "config/ack", "status", "sim/state"])
     assert svc.calls.count(("on_connected", None)) == 1
 
 
@@ -112,3 +112,11 @@ def test_failed_connect_does_not_notify_service():
     b.start()
     c.on_connect(c, None, None, 5, None)
     assert svc.calls == []
+
+
+def test_publish_sim_scenario_not_retained_on_sim_topic():
+    b, _, c = make()
+    b.publish_sim_scenario({"scenario": "smoke_danger"})
+    topic, payload, qos, retain = c.published[0]
+    assert topic == P + "sim/scenario" and qos == 1 and retain is False
+    assert '"smoke_danger"' in payload
