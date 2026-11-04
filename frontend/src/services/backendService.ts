@@ -1,5 +1,5 @@
 import { ESP32Telemetry, DeviceThresholds, SystemMode } from '../types/telemetry';
-import { BackendState, BackendTelemetry, BackendConfig, BackendCommand, WsMessage } from '../types/api';
+import { BackendState, BackendTelemetry, BackendConfig, BackendCommand, BackendSim, WsMessage } from '../types/api';
 import { DEFAULT_THRESHOLDS, INITIAL_TELEMETRY } from './mockData';
 import {
   mapBackendTelemetryToFrontend,
@@ -22,6 +22,8 @@ export class BackendService {
   private isESP32Online = false;
   private lastSeen: number | null = null;
   private userSystemMode: SystemMode | null = null;
+  private sim: BackendSim = { active: false, scenario: null, scenarios: [] };
+  private simListeners: Set<(sim: BackendSim) => void> = new Set();
 
   private telemetryListeners: Set<(telemetry: ESP32Telemetry) => void> = new Set();
   private statusListeners: Set<(status: BackendConnectionStatus) => void> = new Set();
@@ -42,7 +44,9 @@ export class BackendService {
     websocketService.onStatusChange((connected) => {
       this.isServerConnected = connected;
       if (!connected) {
-        this.isESP32Online = false;
+        this.handleServerDisconnected();
+      } else {
+        this.fetchSim();
       }
       this.notifyStatus();
     });
@@ -57,6 +61,30 @@ export class BackendService {
 
     // 4. Gọi HTTP tải dữ liệu khởi tạo ban đầu
     this.fetchInitialData();
+  }
+
+  private handleServerDisconnected(): void {
+    this.isESP32Online = false;
+    this.updateSim({ active: false, scenario: null, scenarios: [] });
+  }
+
+  private async fetchSim(): Promise<void> {
+    try {
+      this.updateSim(await httpClient.getSim());
+    } catch {
+      // backend chưa sẵn sàng hoặc không có simulator: giữ nguyên
+    }
+  }
+
+  private updateSim(sim: BackendSim): void {
+    this.sim = sim;
+    for (const listener of this.simListeners) {
+      try {
+        listener(sim);
+      } catch (e) {
+        console.error('[BackendService] Lỗi listener sim:', e);
+      }
+    }
   }
 
   private async fetchInitialData(): Promise<void> {
@@ -108,6 +136,10 @@ export class BackendService {
             console.error('[BackendService] Lỗi listener command:', e);
           }
         }
+        break;
+
+      case 'sim':
+        this.updateSim(msg.data);
         break;
 
       case 'event':
@@ -166,6 +198,23 @@ export class BackendService {
     return () => {
       this.commandListeners.delete(listener);
     };
+  }
+
+  public getSim(): BackendSim {
+    return this.sim;
+  }
+
+  public subscribeSim(listener: (sim: BackendSim) => void): () => void {
+    this.simListeners.add(listener);
+    listener(this.sim);
+    return () => {
+      this.simListeners.delete(listener);
+    };
+  }
+
+  /** Yêu cầu ESP32 giả lập đổi kịch bản; trạng thái mới về qua tin WebSocket "sim". */
+  public async setSimScenario(scenario: string): Promise<void> {
+    await httpClient.setSimScenario(scenario);
   }
 
   public getStatus(): BackendConnectionStatus {

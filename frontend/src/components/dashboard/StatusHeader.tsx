@@ -9,6 +9,7 @@ import {
   Settings2
 } from 'lucide-react';
 import { SystemMode, ScenarioType } from '../../types/telemetry';
+import { BackendSim } from '../../types/api';
 
 interface StatusHeaderProps {
   systemMode: SystemMode;
@@ -20,6 +21,9 @@ interface StatusHeaderProps {
   onScenarioChange: (scenario: ScenarioType) => void;
   onOpenConfig: () => void;
   isServerConnected?: boolean;
+  /** ESP32 giả lập đang chạy qua backend: ô Kịch bản điều khiển nó thay vì mô phỏng trong trình duyệt */
+  sim?: BackendSim;
+  onSimScenarioChange?: (scenarioId: string) => void;
 }
 
 export const StatusHeader: React.FC<StatusHeaderProps> = ({
@@ -32,6 +36,8 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
   onScenarioChange,
   onOpenConfig,
   isServerConnected = false,
+  sim,
+  onSimScenarioChange,
 }) => {
   // Chuyển đổi uptime_ms sang chuỗi dễ đọc
   const formatUptime = (ms: number): string => {
@@ -159,7 +165,23 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
             {/* Scenario Demo Dropdown (Mô phỏng kiểm thử) */}
             <div className="flex items-center gap-1.5 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
               <RefreshCw className="w-3 h-3 text-slate-500" />
-              <span className="text-[11px] text-slate-500 hidden sm:inline">Kịch bản:</span>
+              <span className="text-[11px] text-slate-500 hidden sm:inline">
+                {sim?.active ? 'Kịch bản ESP32 giả lập:' : 'Kịch bản:'}
+              </span>
+              {sim?.active && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" title="ESP32 giả lập đang chạy" />}
+              {sim?.active ? (
+                <select
+                  value={sim.scenario ?? ''}
+                  onChange={(e) => onSimScenarioChange?.(e.target.value)}
+                  className="bg-transparent text-xs text-blue-700 font-medium focus:outline-none cursor-pointer"
+                >
+                  {sim.scenarios.map((sc, i) => (
+                    <option key={sc.id} value={sc.id} className="bg-white text-slate-800">
+                      {i + 1}. {sc.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
               <select
                 value={currentScenario}
                 onChange={(e) => onScenarioChange(e.target.value as ScenarioType)}
@@ -175,6 +197,7 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
                 <option value="dht_error" className="bg-white text-slate-800">8. Lỗi cảm biến DHT11</option>
                 <option value="esp32_offline" className="bg-white text-slate-800">9. Mất kết nối (Offline)</option>
               </select>
+              )}
             </div>
 
           </div>

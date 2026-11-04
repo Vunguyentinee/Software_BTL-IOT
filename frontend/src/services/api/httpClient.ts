@@ -5,6 +5,7 @@ import {
   BackendCommand,
   BackendEvent,
   BackendHistoryStats,
+  BackendSim,
 } from '../../types/api';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
@@ -116,6 +117,18 @@ class HttpClient {
     return this.request<{ cmd_id: string; status: string }>(`/api/devices/${device}/command`, {
       method: 'POST',
       body: JSON.stringify({ action }),
+    });
+  }
+
+  public async getSim(): Promise<BackendSim> {
+    return this.request<BackendSim>('/api/sim');
+  }
+
+  /** Đổi kịch bản của ESP32 giả lập. Lỗi 409 nếu chưa có ESP32 giả lập đang chạy. */
+  public async setSimScenario(scenario: string): Promise<BackendSim & { requested: string }> {
+    return this.request<BackendSim & { requested: string }>('/api/sim/scenario', {
+      method: 'POST',
+      body: JSON.stringify({ scenario }),
     });
   }
 

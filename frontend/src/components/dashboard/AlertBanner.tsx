@@ -20,6 +20,8 @@ export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry }) => {
     heat_alarm, 
     smoke_alarm, 
     smoke_ppm, 
+    pump_on,
+    thresholds,
     temperature_c, 
     dht_ok, 
     pir_ready, 
@@ -81,12 +83,17 @@ export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry }) => {
                   Cảnh báo nồng độ khói cao: {smoke_ppm} PPM
                 </h3>
                 <span className="px-2.5 py-0.5 text-[10px] font-bold bg-amber-200 text-amber-900 rounded-full border border-amber-300">
-                  Vượt ngưỡng 300 PPM
+                  Vượt ngưỡng {thresholds.smoke_alarm_ppm} PPM
                 </span>
               </div>
               <p className="text-xs text-amber-800 mt-1 leading-relaxed">
                 Phát hiện mật độ khói/khí độc tăng đột biến trong khu vực giám sát. Hãy kiểm tra ngay nguồn nhiệt và thông gió!
               </p>
+              {pump_on && (
+                <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold bg-blue-100/80 text-blue-900 px-2.5 py-1 rounded-lg">
+                  Bơm nước: ĐANG CHẠY
+                </p>
+              )}
             </div>
           </div>
         </div>

@@ -70,6 +70,13 @@ export interface BackendHistoryStats {
   max: number | null;
 }
 
+/** ESP32 giả lập (chỉ có khi chạy docker compose --profile sim). */
+export interface BackendSim {
+  active: boolean;
+  scenario: string | null;
+  scenarios: Array<{ id: string; label: string }>;
+}
+
 export interface BackendState {
   online: boolean;
   last_seen: number | null;
@@ -83,6 +90,7 @@ export type WsMessage =
   | { kind: 'event'; data: BackendEvent }
   | { kind: 'command'; data: BackendCommand }
   | { kind: 'config'; data: BackendConfig }
+  | { kind: 'sim'; data: BackendSim }
   | {
       kind: 'connection';
       data: {

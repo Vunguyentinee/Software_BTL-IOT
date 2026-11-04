@@ -20,7 +20,7 @@ npm run dev          # mở http://localhost:3000
 
 Cho máy khác trong cùng WiFi mở dashboard: `npm run dev -- --host`, rồi vào `http://<IP máy chạy frontend>:3000`.
 
-Lệnh khác: `npm run build` (đóng gói), `npm test` (40 test), `npm run preview`.
+Lệnh khác: `npm run build` (đóng gói), `npm test` (48 test), `npm run preview`.
 
 ## 2. Kết nối backend
 
@@ -43,6 +43,10 @@ Backend cho phép CORS từ mọi nguồn trong mạng nội bộ nên cách nà
 Khởi động backend trước (xem README gốc), hoặc chạy kèm ESP32 giả lập để có dữ liệu: `docker compose --profile sim up -d --build`.
 
 ## 3. Dữ liệu thật và dữ liệu mô phỏng
+
+**Ô "Kịch bản" ở đầu trang** có hai chế độ:
+- Khi ESP32 giả lập của backend đang chạy (`docker compose --profile sim up -d`), ô này hiện **"Kịch bản ESP32 giả lập"** và điều khiển nó qua `POST /api/sim/scenario`. Dữ liệu đi qua MQTT, database và giao diện như ESP32 thật: banner cảnh báo, thẻ cảm biến, còi, bơm, biểu đồ, sự kiện trong database.
+- Khi không có ESP32 giả lập, ô này chỉ điều khiển dữ liệu mô phỏng ngay trong trình duyệt (mục dưới) và không đụng tới backend.
 
 - **Khi WebSocket tới backend kết nối được**, dashboard dùng dữ liệu thật. Thanh trạng thái hiển thị backend và ESP32 online hay offline.
 - **Khi không kết nối được backend**, ứng dụng tự chuyển sang **dữ liệu mô phỏng** (`src/services/mockData.ts`) để vẫn xem được giao diện.

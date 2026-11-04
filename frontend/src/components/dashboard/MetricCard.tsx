@@ -93,13 +93,13 @@ export const MetricCardsGrid: React.FC<MetricCardsGridProps> = ({ telemetry }) =
 
   // 3. Phân loại mức khói
   const getSmokeStatus = () => {
-    if (smoke_alarm || smoke_ppm >= 300) {
+    if (smoke_alarm || smoke_ppm >= telemetry.thresholds.smoke_alarm_ppm) {
       return { 
         valColor: 'text-rose-600', 
         cardBg: 'bg-rose-50/50 border-rose-300 shadow-xs animate-pulse', 
         badge: 'Cảnh báo cháy', 
         badgeColor: 'bg-rose-100 text-rose-800 border-rose-300',
-        desc: 'Vượt ngưỡng an toàn 300 PPM' 
+        desc: `Vượt ngưỡng an toàn ${telemetry.thresholds.smoke_alarm_ppm} PPM`
       };
     }
     if (smoke_ppm > 150) {

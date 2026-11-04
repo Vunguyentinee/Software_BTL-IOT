@@ -50,6 +50,7 @@ export function mapBackendTelemetryToFrontend(
     led3_on: Boolean(raw.led3_on),
     heat_alarm: Boolean(raw.heat_alarm),
     buzzer_on: Boolean(raw.heat_alarm || smokeAlarm),
+    pump_on: Boolean(raw.pump_on),
     uptime_ms: raw.uptime_ms ?? 0,
     system_mode: mode,
     timestamp,

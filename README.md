@@ -62,7 +62,7 @@ docker compose logs -f backend   # xem log backend
 - Danh sách endpoint, ví dụ và mã lỗi: [backend/docs/API_MQTT.md](backend/docs/API_MQTT.md). Xem thử trực tiếp tại `http://<IP máy chủ>:8000/docs`.
 - Sửa giao diện: xem [frontend/README.md](frontend/README.md) (`npm install`, `npm run dev` để xem thay đổi ngay; sau đó `docker compose up -d --build frontend` để đóng gói lại).
 - API lịch sử có thêm thống kê (`/api/history/stats`), phân trang (`/api/history/page`) và tải CSV (`/api/history.csv`).
-- Chưa có phần cứng: chạy `docker compose --profile sim up -d` để có dữ liệu giả.
+- Chưa có phần cứng: chạy `docker compose --profile sim up -d` để có dữ liệu giả. Ô **Kịch bản** ở đầu trang khi đó điều khiển ESP32 giả lập (khói/cháy, nhiệt độ cao, mất kết nối...); danh sách kịch bản ở `backend/docs/API_MQTT.md` mục 6.
 
 ### Cơ sở dữ liệu (Người 5)
 - PostgreSQL chạy ở `<IP máy chủ>:5432`, database `smarthome`, user `smarthome`, mật khẩu `smarthome` (mặc định, đổi trong `.env`).

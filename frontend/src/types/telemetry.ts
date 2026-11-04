@@ -40,6 +40,7 @@ export interface ESP32Telemetry {
   led3_on: boolean;             // LED3 (Đèn báo nhiệt độ cao)
   heat_alarm: boolean;          // Cảnh báo nhiệt đang hoạt động (còi + LED3)
   buzzer_on: boolean;           // Trạng thái còi kêu
+  pump_on?: boolean;            // Bơm nước (chỉ có khi nhận dữ liệu từ backend)
 
   // 5. Quản trị hệ thống & Kết nối
   uptime_ms: number;            // Thời gian ESP32 chạy từ lần khởi động

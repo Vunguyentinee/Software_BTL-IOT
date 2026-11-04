@@ -11,6 +11,7 @@ import { ThresholdModal } from './components/config/ThresholdModal';
 import { backendService, BackendConnectionStatus } from './services/backendService';
 import { mockService } from './services/mockData';
 import { ESP32Telemetry, SystemMode, ScenarioType, DeviceThresholds } from './types/telemetry';
+import { BackendSim } from './types/api';
 import { CheckCircle2, AlertCircle } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -19,6 +20,9 @@ export const App: React.FC = () => {
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
   const [appToast, setAppToast] = useState<{ message: string; isError?: boolean } | null>(null);
   const [backendStatus, setBackendStatus] = useState<BackendConnectionStatus>(backendService.getStatus());
+  const [sim, setSim] = useState<BackendSim>(backendService.getSim());
+
+  useEffect(() => backendService.subscribeSim(setSim), []);
 
   // 1. Khởi tạo BackendService (WebSocket & HTTP state)
   useEffect(() => {
@@ -61,6 +65,22 @@ export const App: React.FC = () => {
     } catch (err: any) {
       setAppToast({
         message: err?.message || 'Không thể chuyển chế độ vận hành',
+        isError: true,
+      });
+    }
+  };
+
+  // Có ESP32 giả lập đang chạy: đổi kịch bản của nó (qua backend), trạng thái mới về qua WebSocket
+  const handleSimScenarioChange = async (scenarioId: string) => {
+    const label = sim.scenarios.find((s) => s.id === scenarioId)?.label ?? scenarioId;
+    try {
+      await backendService.setSimScenario(scenarioId);
+      setAppToast({ message: `Đã gửi kịch bản "${label}" tới ESP32 giả lập.` });
+    } catch (err: any) {
+      setAppToast({
+        message: err?.message === 'simulator_not_active'
+          ? 'ESP32 giả lập không còn chạy. Bật bằng: docker compose --profile sim up -d'
+          : err?.message || 'Không đổi được kịch bản',
         isError: true,
       });
     }
@@ -120,6 +140,8 @@ export const App: React.FC = () => {
         lastUpdated={telemetry.timestamp}
         currentScenario={currentScenario}
         onScenarioChange={handleScenarioChange}
+        sim={sim}
+        onSimScenarioChange={handleSimScenarioChange}
         onOpenConfig={() => setIsConfigOpen(true)}
       />
 

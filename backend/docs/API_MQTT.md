@@ -13,6 +13,8 @@ Hệ thống có **một ESP32**, `device_id` = `esp32-home`. Mọi topic có ti
 | `…/config/set` | backend → ESP32 | 1 / **retained** | Ngưỡng mới |
 | `…/config/ack` | ESP32 → backend | 1 / không | Xác nhận áp dụng ngưỡng |
 | `…/status` | ESP32 → backend | 1 / **retained** | Chuỗi `online` / `offline` |
+| `…/sim/state` | simulator → backend | 1 / **retained** | Chỉ ESP32 giả lập: đang chạy, kịch bản hiện tại, danh sách kịch bản (xem mục 6) |
+| `…/sim/scenario` | backend → simulator | 1 / không | Chỉ ESP32 giả lập: yêu cầu đổi kịch bản |
 
 ### telemetry
 ```json
@@ -68,6 +70,8 @@ ESP32 đăng ký **Last Will** với topic `…/status`, payload `offline`, reta
 | GET | `/api/commands?limit=` | Lệnh mới nhất trước |
 | GET | `/api/commands/{cmd_id}` | `status` ∈ `pending`, `ok`, `failed`, `timeout`; 404 nếu không có |
 | POST | `/api/devices/{device}/command` | Body `{"action": "on"}`. 200 `{cmd_id, status}`; **409** `device_offline`; **422** thiết bị/hành động sai |
+| GET | `/api/sim` | Trạng thái ESP32 giả lập: `{active, scenario, scenarios: [{id, label}]}`. Không có simulator thì `active: false`. |
+| POST | `/api/sim/scenario` | Body `{"scenario": "smoke_danger"}`. 200 `{requested, ...trạng thái}`; **409** `simulator_not_active`; **422** kịch bản không tồn tại. Kịch bản đổi thật khi simulator xác nhận (tin WebSocket `sim`). |
 | GET | `/api/config` | `{config_id, thresholds, status, detail}`; `status` ∈ `none`, `pending`, `applied`, `rejected`, `timeout` |
 | PUT | `/api/config` | Body là 6 ngưỡng (trường nào bỏ trống dùng mặc định). 200 trạng thái `pending`; **422** nếu `fan_off ≥ fan_on`, `heat_alarm_off ≥ heat_alarm_on` hoặc `smoke_low ≥ smoke_high` |
 
@@ -86,6 +90,7 @@ Sau khi kết nối nhận ngay `{"kind": "snapshot", "data": <như /api/state>}
 | `connection` | `{online, since, …}` khi online/offline đổi |
 | `command` | bản ghi lệnh mỗi khi đổi trạng thái |
 | `config` | như `GET /api/config` |
+| `sim` | như `GET /api/sim`, gửi khi simulator bật/tắt hoặc đổi kịch bản |
 
 ## 4. Luồng dữ liệu
 
@@ -105,3 +110,28 @@ Dữ liệu:   ESP32 --telemetry/event--> backend --WS--> web ; backend --> lớ
 4. Subscribe `…/cmd` và `…/config/set`; thực thi rồi publish ack (lệnh thủ công giữ đến khi nhận `auto`).
 5. Cảnh báo khói được ưu tiên hơn chế độ thủ công; giới hạn thời gian chạy bơm trong firmware; publish `event` khi bật/tắt bơm và cảnh báo.
 6. Cần cung cấp chân GPIO của cảm biến khói và bơm (đặc tả hiện chưa có).
+
+## 6. ESP32 giả lập và kịch bản
+
+Dành cho phát triển và demo khi chưa có phần cứng: `docker compose --profile sim up -d`. Simulator chạy qua MQTT thật, giống ESP32 thật (gửi `telemetry` và `event`, nhận `cmd` và `config/set`, trả ack), và đổi được kịch bản khi đang chạy: từ ô **Kịch bản** trên giao diện hoặc bằng `POST /api/sim/scenario`.
+
+| id | Tình huống | Kết quả mong đợi |
+|---|---|---|
+| `normal` | Bình thường (28°C, khói 300) | Không cảnh báo |
+| `cooling_fan` | 36.2°C | Quạt tự bật (`fan` start) |
+| `heat_alarm` | 41.5°C | Cảnh báo nhiệt + LED3 + còi, quạt chạy (`heat_alarm`, `fan` start) |
+| `smoke_danger` | Khói thô 3000 (> `smoke_high`) | Cảnh báo khói + bơm chạy (`smoke_alarm`, `pump` start) |
+| `motion_door` | Có chuyển động | Mở cửa, bật LED2 |
+| `dark_light` | Trời tối | Bật LED1 |
+| `dht_error` | DHT11 lỗi | `temperature_c`/`humidity_pct` là `null`, quạt và cảnh báo giữ trạng thái cũ, `dht_error` start |
+| `pir_warming_up` | PIR khởi động | `pir_ready` false trong 60 giây, chưa nhận chuyển động |
+| `esp32_offline` | Mất kết nối | Simulator ngừng gửi `telemetry`; backend báo offline sau 10 giây. Vẫn đổi được kịch bản để quay lại. |
+
+Quy ước của simulator:
+- Quay về `normal` thì cảnh báo tắt theo ngưỡng tắt (`heat_alarm_off`, `smoke_low`), tương ứng sự kiện `end`.
+- Sự kiện (`event`) chỉ gửi khi trạng thái **đổi** (start/end), không lặp theo từng bản tin.
+- Chế độ thủ công của quạt/LED1/cửa được giữ khi đổi kịch bản.
+- `sim/state` được gửi lại mỗi 5 giây làm nhịp tim; quá 15 giây không có thì backend coi simulator đã dừng (`GET /api/sim` trả `active: false`, `POST` trả 409).
+- Ngưỡng dùng chính ngưỡng đang cấu hình qua `config/set`, nên đổi ngưỡng cũng đổi lúc cảnh báo kích hoạt.
+- Chạy tay: `python -m simulator.fake_esp32 --scenario heat_alarm` (kịch bản ban đầu).
+
