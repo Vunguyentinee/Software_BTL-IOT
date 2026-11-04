@@ -6,3 +6,4 @@ backend/data/
 .pytest_cache/
 ~$*
 .env
+_backup/

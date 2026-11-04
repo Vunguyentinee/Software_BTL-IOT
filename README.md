@@ -6,10 +6,12 @@ Hệ thống chạy trên **một laptop** (gọi là "máy chủ demo"). ESP32 
 ESP32 --WiFi/MQTT--> [ Mosquitto ] --> [ Backend (Python) ] --> [ PostgreSQL ]
                                               |  REST + WebSocket
                                               v
-                                   Website / Digital Twin
+                                  [ Website (nginx) ]  --> trình duyệt: http://<IP máy chủ>:3000
 ```
 
-Cả ba thành phần (Mosquitto, Backend, PostgreSQL) chạy bằng **Docker Compose**: một lệnh, giống nhau trên mọi máy.
+Cả bốn thành phần (Mosquitto, Backend, PostgreSQL, Website) chạy bằng **Docker Compose**: một lệnh, giống nhau trên mọi máy.
+
+Cấu trúc thư mục: `backend/` (Python), `frontend/` (React), `docker/` (cấu hình Mosquitto), `docs/` (thiết kế và kế hoạch).
 
 ## 1. Cài đặt (làm một lần trên máy chủ demo)
 
@@ -24,10 +26,10 @@ Mở PowerShell trong thư mục gốc của dự án (nơi có `docker-compose.
 
 ```powershell
 docker compose up -d --build        # chạy cả hệ thống (lần đầu mất vài phút để tải)
-docker compose ps                   # kiểm tra: backend, db, mosquitto đều "Up"
+docker compose ps                   # kiểm tra: backend, db, mosquitto, frontend đều "Up"
 ```
 
-Kiểm tra: mở http://localhost:8000/docs (danh sách API) hoặc http://localhost:8000/api/state.
+Kiểm tra: mở **http://localhost:3000** (giao diện). API và tài liệu API: http://localhost:8000/docs.
 
 Chưa có ESP32 hoặc muốn thử nhanh? Chạy kèm **ESP32 giả lập**:
 
@@ -55,9 +57,10 @@ docker compose logs -f backend   # xem log backend
 - Nếu ESP32 không kết nối được, xem mục 5 (Tường lửa).
 
 ### Website và Digital Twin (Người 6, 7)
-- API: `http://<IP máy chủ>:8000/api/...`; thời gian thực: `ws://<IP máy chủ>:8000/ws`.
+- Giao diện đã được đóng gói sẵn trong Docker Compose: mở `http://<IP máy chủ>:3000`. Nginx của nó tự chuyển `/api` và `/ws` tới backend nên không cần cấu hình gì thêm.
+- API trực tiếp: `http://<IP máy chủ>:8000/api/...`; thời gian thực: `ws://<IP máy chủ>:8000/ws`.
 - Danh sách endpoint, ví dụ và mã lỗi: [backend/docs/API_MQTT.md](backend/docs/API_MQTT.md). Xem thử trực tiếp tại `http://<IP máy chủ>:8000/docs`.
-- Chạy giao diện: xem [FE-Digital-Twin-Monitor/README.md](FE-Digital-Twin-Monitor/README.md) (`npm install`, `npm run dev`, mở http://localhost:3000; proxy mặc định trỏ tới backend cổng 8000).
+- Sửa giao diện: xem [frontend/README.md](frontend/README.md) (`npm install`, `npm run dev` để xem thay đổi ngay; sau đó `docker compose up -d --build frontend` để đóng gói lại).
 - API lịch sử có thêm thống kê (`/api/history/stats`), phân trang (`/api/history/page`) và tải CSV (`/api/history.csv`).
 - Chưa có phần cứng: chạy `docker compose --profile sim up -d` để có dữ liệu giả.
 
@@ -95,11 +98,11 @@ docker compose logs -f backend   # xem log backend
 | Hiện tượng | Cách xử lý |
 |---|---|
 | `docker compose` báo không kết nối được Docker | Mở Docker Desktop, đợi *Engine running*. |
-| ESP32/máy khác không kết nối được tới máy chủ | Windows Firewall chặn. Mở PowerShell **quyền Administrator**: `New-NetFirewallRule -DisplayName "BTL IoT" -Direction Inbound -Protocol TCP -LocalPort 1883,8000,5432 -Action Allow`. Kiểm tra cùng WiFi và đúng IP (`ipconfig`). |
-| `port is already allocated` | Cổng 1883/5432/8000 đang bị chương trình khác dùng (ví dụ PostgreSQL hoặc Mosquitto cài sẵn). Đổi `MQTT_PORT`, `DB_PORT`, `API_PORT` trong `.env`, hoặc tắt chương trình đó. |
+| ESP32/máy khác không kết nối được tới máy chủ | Windows Firewall chặn. Mở PowerShell **quyền Administrator**: `New-NetFirewallRule -DisplayName "BTL IoT" -Direction Inbound -Protocol TCP -LocalPort 1883,3000,8000,5432 -Action Allow`. Kiểm tra cùng WiFi và đúng IP (`ipconfig`). |
+| `port is already allocated` | Cổng 1883/5432/8000 đang bị chương trình khác dùng (ví dụ PostgreSQL hoặc Mosquitto cài sẵn). Đổi `MQTT_PORT`, `DB_PORT`, `API_PORT`, `WEB_PORT` trong `.env`, hoặc tắt chương trình đó. |
 | `/api/state` có `"online": false` | ESP32 chưa gửi dữ liệu trong 10 giây gần nhất. Xem `docker compose logs -f backend` và log Serial của ESP32. |
 | Lệnh từ web trả 409 `device_offline` | ESP32 đang mất kết nối; lệnh bị từ chối có chủ ý. |
 | Muốn xóa sạch dữ liệu để thử lại | `docker compose down -v` rồi `docker compose up -d --build`. |
-| Đổi code backend nhưng không thấy thay đổi | Chạy lại với `--build`: `docker compose up -d --build backend`. |
+| Đổi code backend/frontend nhưng không thấy thay đổi | Chạy lại với `--build`: `docker compose up -d --build backend frontend`. |
 
 > Mosquitto đang cho phép kết nối ẩn danh (không mật khẩu) vì chỉ dùng trong mạng WiFi nội bộ của nhóm. Không mở cổng này ra Internet.

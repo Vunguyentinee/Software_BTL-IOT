@@ -119,3 +119,5 @@ Những thay đổi so với bản thiết kế ban đầu (ngày 2026-10-30):
 - **Ngưỡng:** `smoke_high` = 2000 và `smoke_low` = 1500 là giá trị tạm do kế hoạch đặt, cần đo lại với cảm biến thật.
 - **Hành vi bổ sung:** ack ngưỡng đến muộn sau khi đã `timeout` vẫn được chấp nhận; thời gian chờ ack ngưỡng bắt đầu tính lại khi ESP32 online trở lại.
 - **Chưa làm / chưa kiểm tra:** chưa thử với ESP32 thật (firmware chưa có WiFi/MQTT); chưa có đăng nhập; lịch sử lệnh chưa giới hạn kích thước; chưa có truy vấn trung bình/min/max và xuất CSV (thuộc phần của Người 5).
+- **Tích hợp (2026-11-04):** gộp giao diện vào repo thành `frontend/` và đóng gói trong Docker Compose (nginx phục vụ giao diện, chuyển `/api` và `/ws` tới backend, truy cập ở cổng 3000). Áp dụng 5 patch của Người 5 (thống kê, phân trang, xuất CSV ở tầng Storage) và mở thành ba endpoint `GET /api/history/stats`, `/api/history/page`, `/api/history.csv`. Biểu đồ lịch sử của giao diện không còn thay bằng dữ liệu mô phỏng khi backend chạy thật nhưng chưa có điểm nào.
+
