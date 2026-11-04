@@ -11,6 +11,8 @@ interface TimeFilterProps {
   onEndDateChange: (val: string) => void;
   onRefresh: () => void;
   onExport: () => void;
+  /** Hậu tố mô tả dữ liệu sẽ được xuất, ví dụ tên đại lượng. */
+  exportLabel?: string;
 }
 
 export const TimeFilter: React.FC<TimeFilterProps> = ({
@@ -22,6 +24,7 @@ export const TimeFilter: React.FC<TimeFilterProps> = ({
   onEndDateChange,
   onRefresh,
   onExport,
+  exportLabel,
 }) => {
   const ranges: { id: TimeFilterRange; label: string }[] = [
     { id: '1h', label: '1 Giờ' },
@@ -100,7 +103,7 @@ export const TimeFilter: React.FC<TimeFilterProps> = ({
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-semibold shadow-xs transition-all active:scale-95"
         >
           <Download className="w-3.5 h-3.5 text-emerald-600" />
-          <span>Xuất CSV</span>
+          <span>{exportLabel ? `Xuất CSV · ${exportLabel}` : 'Xuất CSV'}</span>
         </button>
       </div>
 

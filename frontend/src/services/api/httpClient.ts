@@ -4,6 +4,7 @@ import {
   BackendThresholds,
   BackendCommand,
   BackendEvent,
+  BackendHistoryStats,
 } from '../../types/api';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
@@ -57,6 +58,43 @@ class HttpClient {
     if (to !== undefined) params.set('to', String(to));
 
     return this.request<Array<{ ts: number; value: number }>>(`/api/history?${params.toString()}`);
+  }
+
+  private historyQuery(
+    metric: string,
+    from?: number,
+    to?: number,
+    extra: Record<string, number> = {}
+  ): string {
+    const params = new URLSearchParams();
+    params.set('metric', metric);
+    if (from !== undefined) params.set('from', String(from));
+    if (to !== undefined) params.set('to', String(to));
+    for (const [k, v] of Object.entries(extra)) params.set(k, String(v));
+    return params.toString();
+  }
+
+  /** Thống kê count/avg/min/max; không có dữ liệu thì count = 0 và các giá trị còn lại null. */
+  public async getHistoryStats(metric: string, from?: number, to?: number): Promise<BackendHistoryStats> {
+    return this.request<BackendHistoryStats>(`/api/history/stats?${this.historyQuery(metric, from, to)}`);
+  }
+
+  /** Một trang lịch sử, tăng dần theo thời gian. limit 1-1000, offset >= 0. */
+  public async getHistoryPage(
+    metric: string,
+    from: number | undefined,
+    to: number | undefined,
+    limit: number,
+    offset: number
+  ): Promise<Array<{ ts: number; value: number }>> {
+    return this.request<Array<{ ts: number; value: number }>>(
+      `/api/history/page?${this.historyQuery(metric, from, to, { limit, offset })}`
+    );
+  }
+
+  /** Đường dẫn tải CSV (để trình duyệt tải trực tiếp, không nạp cả file vào bộ nhớ). */
+  public getHistoryCsvUrl(metric: string, from?: number, to?: number): string {
+    return `${API_BASE}/api/history.csv?${this.historyQuery(metric, from, to)}`;
   }
 
   public async getEvents(limit = 100): Promise<BackendEvent[]> {

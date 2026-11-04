@@ -63,6 +63,13 @@ export interface BackendCommand {
   ts: number;
 }
 
+export interface BackendHistoryStats {
+  count: number;
+  avg: number | null;
+  min: number | null;
+  max: number | null;
+}
+
 export interface BackendState {
   online: boolean;
   last_seen: number | null;

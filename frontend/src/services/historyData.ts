@@ -1,6 +1,7 @@
 import { TimeFilterRange, HistoryDataPoint } from '../types/history';
 import { ESP32Telemetry } from '../types/telemetry';
 import { httpClient } from './api/httpClient';
+import { resolveRange } from './historyQuery';
 
 export class HistoryDataService {
   private liveBuffer: HistoryDataPoint[] = [];
@@ -62,30 +63,9 @@ export class HistoryDataService {
     customStart?: string,
     customEnd?: string
   ): Promise<HistoryDataPoint[]> {
-    const nowSec = Math.floor(Date.now() / 1000);
-    let fromSec: number;
-    let toSec: number = nowSec;
-
-    switch (range) {
-      case '1h':
-        fromSec = nowSec - 3600;
-        break;
-      case '6h':
-        fromSec = nowSec - 6 * 3600;
-        break;
-      case '24h':
-        fromSec = nowSec - 24 * 3600;
-        break;
-      case '7d':
-        fromSec = nowSec - 7 * 86400;
-        break;
-      case 'custom':
-        fromSec = customStart ? Math.floor(new Date(customStart).getTime() / 1000) : nowSec - 12 * 3600;
-        toSec = customEnd ? Math.floor(new Date(customEnd).getTime() / 1000) : nowSec;
-        break;
-      default:
-        fromSec = nowSec - 3600;
-    }
+    const span = resolveRange(range, customStart, customEnd);
+    if (!span) return [];
+    const { fromSec, toSec } = span;
 
     try {
       // Fetch các metrics từ Backend
