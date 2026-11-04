@@ -57,6 +57,8 @@ docker compose logs -f backend   # xem log backend
 ### Website và Digital Twin (Người 6, 7)
 - API: `http://<IP máy chủ>:8000/api/...`; thời gian thực: `ws://<IP máy chủ>:8000/ws`.
 - Danh sách endpoint, ví dụ và mã lỗi: [backend/docs/API_MQTT.md](backend/docs/API_MQTT.md). Xem thử trực tiếp tại `http://<IP máy chủ>:8000/docs`.
+- Chạy giao diện: xem [FE-Digital-Twin-Monitor/README.md](FE-Digital-Twin-Monitor/README.md) (`npm install`, `npm run dev`, mở http://localhost:3000; proxy mặc định trỏ tới backend cổng 8000).
+- API lịch sử có thêm thống kê (`/api/history/stats`), phân trang (`/api/history/page`) và tải CSV (`/api/history.csv`).
 - Chưa có phần cứng: chạy `docker compose --profile sim up -d` để có dữ liệu giả.
 
 ### Cơ sở dữ liệu (Người 5)
