@@ -6,6 +6,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from .models import CommandRequest, Telemetry, Thresholds
 from .service import DeviceOffline, Service
@@ -78,6 +79,43 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
         if metric not in METRICS:
             raise HTTPException(422, f"unknown metric: {metric}")
         return service.storage.history(metric, _parse_time(from_), _parse_time(to))
+
+    # Ba endpoint dưới đây dùng contract Storage của Người 5. Storage tự kiểm tra
+    # metric, khoảng thời gian (nan/inf, start > end) và giới hạn; ValueError -> 422.
+    def _history_range(from_: Optional[str], to: Optional[str]):
+        return _parse_time(from_), _parse_time(to)
+
+    @app.get("/api/history/stats")
+    def history_stats(metric: str, from_: Optional[str] = Query(None, alias="from"),
+                      to: Optional[str] = None):
+        start, end = _history_range(from_, to)
+        try:
+            return service.storage.history_stats(metric, start, end)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.get("/api/history/page")
+    def history_page(metric: str, from_: Optional[str] = Query(None, alias="from"),
+                     to: Optional[str] = None, limit: int = Query(100, ge=1, le=1000),
+                     offset: int = Query(0, ge=0)):
+        start, end = _history_range(from_, to)
+        try:
+            return service.storage.history_page(metric, start, end, limit, offset)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.get("/api/history.csv")
+    def history_csv(metric: str, from_: Optional[str] = Query(None, alias="from"),
+                    to: Optional[str] = None, batch_size: int = Query(1000, ge=1, le=1000)):
+        start, end = _history_range(from_, to)
+        # Gọi (và kiểm tra) TRƯỚC khi tạo StreamingResponse để lỗi hợp lệ còn trả được 422.
+        try:
+            chunks = service.storage.history_csv(metric, start, end, batch_size)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        return StreamingResponse(
+            chunks, media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{metric}.csv"'})
 
     @app.get("/api/events")
     def events(limit: int = Query(100, ge=1, le=1000)):

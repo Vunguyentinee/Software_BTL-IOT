@@ -61,12 +61,17 @@ ESP32 đăng ký **Last Will** với topic `…/status`, payload `offline`, reta
 |---|---|---|
 | GET | `/api/state` | `{online, last_seen, offline_since, telemetry}` (thời gian là epoch giây, giờ laptop) |
 | GET | `/api/history?metric=&from=&to=` | `metric` là tên trường số của telemetry (ví dụ `temperature_c`, `humidity_pct`, `smoke_raw`); `from`/`to` là epoch giây hoặc ISO 8601. Trả `[{ts, value}]`. Metric lạ hoặc thời gian sai → 422. |
+| GET | `/api/history/stats?metric=&from=&to=` | Thống kê `{count, avg, min, max}`. `metric` ∈ `temperature_c`, `humidity_pct`, `smoke_raw`. Không có dữ liệu thì `count: 0` và ba giá trị còn lại là `null` (UI hiển thị trạng thái rỗng, không hiện 0). |
+| GET | `/api/history/page?metric=&from=&to=&limit=&offset=` | Phân trang `[{ts, value}]` tăng dần theo thời gian. `limit` 1–1000 (mặc định 100), `offset` ≥ 0. `metric` ∈ 15 metric lịch sử (xem `DB_HANDOFF_THAI.md` mục 3). |
+| GET | `/api/history.csv?metric=&from=&to=&batch_size=` | Tải file CSV (`ts,value`, UTF-8, CRLF), truyền theo từng khối, không nạp cả lịch sử vào bộ nhớ. `batch_size` 1–1000. |
 | GET | `/api/events?limit=` | Sự kiện mới nhất trước |
 | GET | `/api/commands?limit=` | Lệnh mới nhất trước |
 | GET | `/api/commands/{cmd_id}` | `status` ∈ `pending`, `ok`, `failed`, `timeout`; 404 nếu không có |
 | POST | `/api/devices/{device}/command` | Body `{"action": "on"}`. 200 `{cmd_id, status}`; **409** `device_offline`; **422** thiết bị/hành động sai |
 | GET | `/api/config` | `{config_id, thresholds, status, detail}`; `status` ∈ `none`, `pending`, `applied`, `rejected`, `timeout` |
 | PUT | `/api/config` | Body là 6 ngưỡng (trường nào bỏ trống dùng mặc định). 200 trạng thái `pending`; **422** nếu `fan_off ≥ fan_on`, `heat_alarm_off ≥ heat_alarm_on` hoặc `smoke_low ≥ smoke_high` |
+
+Ba endpoint `history/stats`, `history/page`, `history.csv` trả **422** nếu metric không hợp lệ, `from`/`to` là `nan`/`inf`, `from > to` hoặc `limit`/`offset`/`batch_size` ngoài khoảng. `from`/`to` là epoch giây hoặc ISO 8601; `ts` trả về là epoch giây (giờ máy chủ nhận).
 
 Web nên coi lệnh/ngưỡng là thành công **chỉ khi** `status` = `ok` / `applied`; nhận qua WebSocket hoặc hỏi lại `GET`.
 
