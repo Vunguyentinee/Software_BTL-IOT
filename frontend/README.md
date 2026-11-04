@@ -20,7 +20,7 @@ npm run dev          # mở http://localhost:3000
 
 Cho máy khác trong cùng WiFi mở dashboard: `npm run dev -- --host`, rồi vào `http://<IP máy chạy frontend>:3000`.
 
-Lệnh khác: `npm run build` (đóng gói), `npm test` (48 test), `npm run preview`.
+Lệnh khác: `npm run build` (đóng gói), `npm test` (72 test), `npm run preview`.
 
 ## 2. Kết nối backend
 
@@ -52,7 +52,17 @@ Khởi động backend trước (xem README gốc), hoặc chạy kèm ESP32 gi�
 - **Khi không kết nối được backend**, ứng dụng tự chuyển sang **dữ liệu mô phỏng** (`src/services/mockData.ts`) để vẫn xem được giao diện.
 - **Biểu đồ lịch sử** (`src/services/historyData.ts`) cũng rơi về chuỗi mô phỏng nếu `/api/history` lỗi hoặc chưa có điểm nào. Vì vậy khi demo, hãy kiểm tra backend đang chạy thật và đã có dữ liệu (ESP32 hoặc simulator chạy vài phút), kẻo nhầm đồ thị mô phỏng với dữ liệu thật.
 
-## 4. Backend cung cấp gì cho frontend
+## 4. Hai nhật ký ở cuối trang
+
+**Nhật ký thay đổi gần nhất** (`ActivityLog`, logic ở `src/services/activityLog.ts`): cập nhật ngay khi có thay đổi, mới nhất ở trên, giữ 100 dòng, hiển thị 30 dòng gần nhất. Gồm:
+- Thiết bị bật/tắt (quạt, LED1, LED2, LED3, cửa, bơm), cảnh báo nhiệt và khói bắt đầu/kết thúc, lỗi DHT11, chuyển động, trời sáng/tối, đổi chế độ Tự động/Thủ công. Các dòng này sinh ra bằng cách so sánh hai bản telemetry liên tiếp, nên cả thay đổi do ESP32 tự làm lẫn do lệnh đều hiện lên.
+- ESP32 mất kết nối hoặc kết nối lại.
+- Lệnh điều khiển (cập nhật cùng một dòng từ "đang chờ" sang "thành công/thất bại/quá thời gian") và cấu hình ngưỡng (đang gửi, đã áp dụng, bị từ chối).
+- Khi mở trang, nạp thêm sự kiện và lệnh gần nhất từ database (`/api/events`, `/api/commands`), nên tải lại trang không mất lịch sử. Riêng các thay đổi trạng thái ngắn không được ESP32 gửi thành sự kiện thì chỉ có từ lúc mở trang trở đi.
+
+**Nhật ký thực thi lệnh** (`CommandLogTable`): chỉ các lệnh điều khiển và kết quả ack, độ trễ. Khi mở trang cũng nạp lệnh gần nhất từ database, không còn hai dòng mẫu.
+
+## 5. Backend cung cấp gì cho frontend
 
 Danh sách đầy đủ, ví dụ và mã lỗi ở [API_MQTT.md](API_MQTT.md) (bản sao của `backend/docs/API_MQTT.md`; khi backend đổi API, chép lại file này).
 
@@ -73,7 +83,7 @@ Lưu ý khi làm việc với backend:
 - Thống kê, bảng dữ liệu và nút **Xuất CSV** dùng chung bộ lọc thời gian phía trên và chỉ hiện khi đã kết nối backend. File CSV có hai cột `ts,value` (`ts` là epoch giây) cho **một** đại lượng, chọn ở ô "Đại lượng" của bảng dữ liệu. Khi chưa kết nối backend (chế độ mô phỏng), nút này quay về xuất từ dữ liệu đang hiển thị trên biểu đồ.
 - Khoảng "Tùy chọn" có Từ sau Đến thì giao diện báo khoảng không hợp lệ thay vì gọi API.
 
-## 5. Cấu trúc thư mục
+## 6. Cấu trúc thư mục
 
 ```
 src/
@@ -83,6 +93,7 @@ src/
     backendService.ts   trạng thái kết nối và telemetry từ backend
     commandService.ts   gửi lệnh và chờ ack
     historyData.ts      lịch sử cho biểu đồ (có fallback mô phỏng khi mất kết nối)
+    activityLog.ts      nhật ký thay đổi gần nhất
     historyQuery.ts     đổi bộ lọc thời gian thành khoảng epoch giây, danh sách đại lượng
     mockData.ts         dữ liệu mô phỏng
   types/           kiểu dữ liệu (api.ts khớp backend/app/models.py)

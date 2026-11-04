@@ -8,6 +8,7 @@ import {
 } from './api/mappers';
 import { httpClient } from './api/httpClient';
 import { websocketService } from './api/websocketService';
+import { activityLog } from './activityLog';
 
 export interface BackendConnectionStatus {
   isServerConnected: boolean;
@@ -47,6 +48,7 @@ export class BackendService {
         this.handleServerDisconnected();
       } else {
         this.fetchSim();
+        this.fetchActivityHistory();
       }
       this.notifyStatus();
     });
@@ -66,6 +68,14 @@ export class BackendService {
   private handleServerDisconnected(): void {
     this.isESP32Online = false;
     this.updateSim({ active: false, scenario: null, scenarios: [] });
+  }
+
+  private async fetchActivityHistory(): Promise<void> {
+    const [events, commands] = await Promise.allSettled([httpClient.getEvents(50), httpClient.getCommands(50)]);
+    activityLog.loadHistory(
+      events.status === 'fulfilled' ? events.value : [],
+      commands.status === 'fulfilled' ? commands.value : []
+    );
   }
 
   private async fetchSim(): Promise<void> {
@@ -125,10 +135,12 @@ export class BackendService {
         break;
 
       case 'config':
+        activityLog.ingestConfig(msg.data);
         this.handleConfigUpdate(msg.data);
         break;
 
       case 'command':
+        activityLog.ingestCommand(msg.data);
         for (const listener of this.commandListeners) {
           try {
             listener(msg.data);

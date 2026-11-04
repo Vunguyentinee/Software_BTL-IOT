@@ -2,6 +2,7 @@ import { DeviceTarget, CommandLogEntry, CommandAck } from '../types/command';
 import { backendService } from './backendService';
 import { mockService } from './mockData';
 import { httpClient } from './api/httpClient';
+import { BackendCommand } from '../types/api';
 import { mapTargetToBackendCommand } from './api/mappers';
 
 export class CommandService {
@@ -40,6 +41,47 @@ export class CommandService {
     backendService.onCommandUpdate((backendCmd) => {
       this.handleBackendCommandPush(backendCmd);
     });
+
+    // Khi kết nối được backend: nạp lịch sử lệnh thật (một lần cho mỗi lần kết nối)
+    let wasConnected = false;
+    backendService.subscribeStatus((s) => {
+      if (s.isServerConnected && !wasConnected) void this.loadHistory();
+      wasConnected = s.isServerConnected;
+    });
+  }
+
+  /** Nạp các lệnh gần nhất từ database (qua backend), thay cho dòng mẫu ban đầu. */
+  public async loadHistory(limit = 50): Promise<void> {
+    let commands: BackendCommand[];
+    try {
+      commands = await httpClient.getCommands(limit);
+    } catch {
+      return; // backend chưa sẵn sàng: giữ nguyên danh sách hiện có
+    }
+    const known = new Set(this.logs.map((l) => l.id));
+    const fromBackend = commands
+      .filter((c) => !known.has(c.cmd_id))
+      .map((c) => this.entryFromBackend(c));
+    this.logs = [...this.logs.filter((l) => !l.id.startsWith('cmd_init_')), ...fromBackend]
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, 50);
+    this.notify();
+  }
+
+  private entryFromBackend(c: BackendCommand): CommandLogEntry {
+    const target = c.device as DeviceTarget;
+    const value = c.action === 'on' || c.action === 'open';
+    return {
+      id: c.cmd_id,
+      target,
+      deviceName: this.getDeviceName(target),
+      actionText: c.action === 'auto' ? 'Chuyển về tự động' : this.getActionText(target, value),
+      value,
+      status: c.status === 'ok' ? 'success' : c.status === 'pending' ? 'pending' : 'error',
+      timestamp: Math.round(c.sent_ts * 1000),
+      message: c.detail || `Lệnh từ ${c.source || 'hệ thống'}: ${c.device} -> ${c.action} [${c.status}]`,
+      latencyMs: c.ack_ts ? Math.round((c.ack_ts - c.sent_ts) * 1000) : undefined,
+    };
   }
 
   public subscribe(listener: (logs: CommandLogEntry[]) => void): () => void {

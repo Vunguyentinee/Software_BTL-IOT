@@ -6,6 +6,8 @@ import { LCDSimulator } from './components/dashboard/LCDSimulator';
 import { JsonTelemetryViewer } from './components/dashboard/JsonTelemetryViewer';
 import { ControlPanel } from './components/control/ControlPanel';
 import { CommandLogTable } from './components/control/CommandLogTable';
+import { ActivityLog } from './components/dashboard/ActivityLog';
+import { activityLog } from './services/activityLog';
 import { HistorySection } from './components/charts/HistorySection';
 import { ThresholdModal } from './components/config/ThresholdModal';
 import { backendService, BackendConnectionStatus } from './services/backendService';
@@ -39,18 +41,29 @@ export const App: React.FC = () => {
 
   // 2. Đăng ký luồng Telemetry: Ưu tiên Backend nếu online, fallback sang mockService
   useEffect(() => {
+    activityLog.resetBaseline(); // đổi nguồn dữ liệu: bản telemetry kế tiếp chỉ làm mốc so sánh
     if (backendStatus.isServerConnected) {
       const unsubscribe = backendService.subscribe((newTelemetry) => {
         setTelemetry(newTelemetry);
+        // Chưa có dữ liệu thật từ ESP32 thì chưa ghi nhật ký (tránh coi giá trị khởi tạo là thay đổi)
+        if (backendService.getStatus().isESP32Online) activityLog.observeTelemetry(newTelemetry);
       });
       return () => unsubscribe();
     } else {
       const unsubscribe = mockService.subscribe((newTelemetry) => {
         setTelemetry(newTelemetry);
+        activityLog.observeTelemetry(newTelemetry);
       });
       return () => unsubscribe();
     }
   }, [backendStatus.isServerConnected]);
+
+  // Mất / khôi phục kết nối ESP32 (chỉ sau khi đã nhận trạng thái đầu tiên từ backend)
+  useEffect(() => {
+    if (backendStatus.isServerConnected && backendStatus.lastSeen !== null) {
+      activityLog.observeConnection(backendStatus.isESP32Online);
+    }
+  }, [backendStatus]);
 
   const handleModeChange = async (newMode: SystemMode) => {
     try {
@@ -193,6 +206,7 @@ export const App: React.FC = () => {
         </div>
 
         {/* 7. NHẬT KÝ THỰC THI LỆNH (COMMAND ACK LOG) */}
+        <ActivityLog live={backendStatus.isServerConnected} />
         <CommandLogTable />
       </main>
 

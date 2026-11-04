@@ -1,4 +1,4 @@
-# Digital Twin nhà thông minh — hướng dẫn chạy hệ thống
+# Digital Twin nhà thông minh — hướng dẫn chạy hệ thống phần mềm
 
 Hệ thống chạy trên **một laptop** (gọi là "máy chủ demo"). ESP32 và các máy khác trong nhóm kết nối vào máy đó qua cùng một mạng WiFi.
 
