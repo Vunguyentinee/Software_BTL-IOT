@@ -25,7 +25,8 @@ export const JsonTelemetryViewer: React.FC<JsonTelemetryViewerProps> = ({ teleme
     led3_on: telemetry.led3_on,
     heat_alarm: telemetry.heat_alarm,
     uptime_ms: telemetry.uptime_ms,
-    // Các trường mở rộng
+    // Các trường đo Gas & mở rộng
+    smoke_raw: telemetry.smoke_raw ?? null,
     smoke_ppm: telemetry.smoke_ppm,
     smoke_alarm: telemetry.smoke_alarm,
     system_mode: telemetry.system_mode,

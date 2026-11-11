@@ -22,8 +22,8 @@ interface HistoryChartsProps {
 }
 
 export const HistoryCharts: React.FC<HistoryChartsProps> = ({ data, thresholds }) => {
-  const fanOnTemp = thresholds?.fan_on_temp ?? 35;
-  const heatAlarmTemp = thresholds?.heat_alarm_on_temp ?? 40;
+  const fanOnTemp = thresholds?.fan_on_temp ?? 30;
+  const heatAlarmTemp = thresholds?.heat_alarm_on_temp ?? 31;
   const smokeAlarmPpm = thresholds?.smoke_alarm_ppm ?? 300;
 
   const [activeTab, setActiveTab] = useState<'temp_hum' | 'smoke_motion'>('temp_hum');

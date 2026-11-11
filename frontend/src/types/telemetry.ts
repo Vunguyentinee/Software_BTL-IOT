@@ -28,7 +28,8 @@ export interface ESP32Telemetry {
   is_dark: boolean;             // Cảm biến quang trở báo trời tối
 
   // 3. Cảm biến khói (Mở rộng theo yêu cầu đề bài)
-  smoke_ppm: number;            // Nồng độ khói/khí ga (PPM)
+  smoke_raw?: number | null;    // Giá trị ADC thô từ chân AO (GPIO 34) 0..4095
+  smoke_ppm: number;            // Nồng độ khói/khí ga ước tính (PPM)
   smoke_detected: boolean;      // Vượt ngưỡng khói
   smoke_alarm: boolean;         // Cảnh báo khói nguy cấp
 

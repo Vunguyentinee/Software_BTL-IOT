@@ -27,7 +27,7 @@ export function mapBackendTelemetryToFrontend(
   }
 
   const smokeAlarm = Boolean(raw.smoke_alarm);
-  const smokeDetected = smokeAlarm || smokePpm > 150;
+  const smokeDetected = smokeAlarm || (smokePpm >= currentThresholds.smoke_alarm_ppm);
 
   // ts từ backend là epoch seconds (float)
   const timestamp = raw.ts ? Math.round(raw.ts * 1000) : Date.now();
@@ -40,6 +40,7 @@ export function mapBackendTelemetryToFrontend(
     pir_warmup_remaining_sec: raw.pir_ready ? 0 : 30,
     motion_detected: raw.motion_detected ?? false,
     is_dark: raw.is_dark ?? false,
+    smoke_raw: raw.smoke_raw ?? null,
     smoke_ppm: smokePpm,
     smoke_detected: smokeDetected,
     smoke_alarm: smokeAlarm,

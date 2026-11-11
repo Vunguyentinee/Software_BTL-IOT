@@ -149,7 +149,7 @@ export const ThresholdModal: React.FC<ThresholdModalProps> = ({
                 </h4>
               </div>
               <span className="text-[11px] text-blue-700 font-mono font-medium">
-                Mặc định: 34.0°C – 35.0°C
+                Mặc định firmware: 29.5°C – 30.0°C
               </span>
             </div>
 
@@ -207,7 +207,7 @@ export const ThresholdModal: React.FC<ThresholdModalProps> = ({
                 </h4>
               </div>
               <span className="text-[11px] text-rose-700 font-mono font-medium">
-                Mặc định: 37.0°C – 40.0°C
+                Mặc định firmware: 30.0°C – 31.0°C
               </span>
             </div>
 
@@ -261,7 +261,7 @@ export const ThresholdModal: React.FC<ThresholdModalProps> = ({
               <div className="flex items-center gap-2">
                 <Flame className="w-4 h-4 text-purple-600" />
                 <h4 className="text-xs font-bold text-slate-800 uppercase">
-                  3. Ngưỡng Cảnh Báo Khói (MQ-2)
+                  3. Ngưỡng Cảnh Báo Khói (Gas AO GPIO 34)
                 </h4>
               </div>
               <span className="text-[11px] text-purple-700 font-mono font-medium">

@@ -50,7 +50,10 @@ export const MetricCardsGrid: React.FC<MetricCardsGridProps> = ({ telemetry }) =
         desc: 'Không có dữ liệu DHT11' 
       };
     }
-    if (temperature_c >= 40.0) {
+    const heatLimit = telemetry.thresholds?.heat_alarm_on_temp ?? 31.0;
+    const fanLimit = telemetry.thresholds?.fan_on_temp ?? 30.0;
+
+    if (temperature_c >= heatLimit) {
       return { 
         valColor: 'text-rose-600', 
         cardBg: 'bg-rose-50/50 border-rose-300 shadow-xs animate-pulse-fast', 
@@ -59,7 +62,7 @@ export const MetricCardsGrid: React.FC<MetricCardsGridProps> = ({ telemetry }) =
         desc: 'Còi hú + LED3 sáng' 
       };
     }
-    if (temperature_c >= 35.0) {
+    if (temperature_c >= fanLimit) {
       return { 
         valColor: 'text-orange-600', 
         cardBg: 'bg-orange-50/40 border-orange-200 shadow-xs', 
@@ -242,7 +245,7 @@ export const MetricCardsGrid: React.FC<MetricCardsGridProps> = ({ telemetry }) =
               </div>
               <div>
                 <h3 className="text-sm font-bold text-slate-800">Khói / Khí Ga</h3>
-                <span className="text-[11px] text-slate-500">MQ-2 • Chân 35</span>
+                <span className="text-[11px] text-slate-500">Gas AO • GPIO 34</span>
               </div>
             </div>
             <span className={`px-2.5 py-0.5 text-[11px] font-semibold rounded-full border ${smokeStatus.badgeColor}`}>
@@ -289,7 +292,7 @@ export const MetricCardsGrid: React.FC<MetricCardsGridProps> = ({ telemetry }) =
               </div>
               <div>
                 <h3 className="text-sm font-bold text-slate-800">Ánh sáng & PIR</h3>
-                <span className="text-[11px] text-slate-500">LDR (34) • PIR (32)</span>
+                <span className="text-[11px] text-slate-500">DO (33) • PIR (32)</span>
               </div>
             </div>
             <span className={`px-2.5 py-0.5 text-[11px] font-semibold rounded-full border ${
@@ -334,7 +337,7 @@ export const MetricCardsGrid: React.FC<MetricCardsGridProps> = ({ telemetry }) =
             <div className="flex items-center justify-between text-xs px-1">
               <span className="flex items-center gap-1.5 text-slate-500">
                 <Lightbulb className={`w-3.5 h-3.5 ${led1_on ? 'text-amber-500' : 'text-slate-400'}`} />
-                Đèn tối (LED1):
+                Đèn tối & có người (LED1):
               </span>
               <span className={`font-semibold ${led1_on ? 'text-amber-700' : 'text-slate-500'}`}>
                 {led1_on ? 'BẬT' : 'TẮT'}

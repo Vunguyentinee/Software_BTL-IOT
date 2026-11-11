@@ -7,74 +7,80 @@ interface LCDSimulatorProps {
 }
 
 /**
- * Mô phỏng chính xác màn hình LCD 16x2 I2C theo mục 4 trong specification.md:
- * - Luân phiên 3 trang, mỗi trang 3 giây.
- * - Ưu tiên hiển thị cảnh báo nhiệt khi heat_alarm = true.
- * - Hiển thị thông báo lỗi khi DHT11 lỗi.
+ * Mô phỏng chính xác màn hình LCD 16x2 I2C theo hàm updateLCD() trong ESP32_DigitalTwin_BanGiao.ino:
+ * - Chu kỳ lật trang: 4 giây (LCD_PAGE_MS = 4000).
+ * - Dòng 1: Luôn hiển thị nhiệt độ/độ ẩm hoặc báo lỗi DHT11.
+ * - Dòng 2: Ưu tiên cảnh báo nhiệt (heat_alarm) -> PIR warm-up -> Luân phiên 3 trang:
+ *     Trang 0: L1:[ON|OFF] L2:[ON|OFF]
+ *     Trang 1: C:[MO|DONG] Q:[ON|OFF]
+ *     Trang 2: Trạng thái PIR & giữ/đóng cửa
  */
 export const LCDSimulator: React.FC<LCDSimulatorProps> = ({ telemetry }) => {
-  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [currentPage, setCurrentPage] = useState<number>(0);
 
   const {
     temperature_c,
     humidity_pct,
     dht_ok,
     fan_on,
-    is_dark,
+    led1_on,
+    led2_on,
     pir_ready,
     pir_warmup_remaining_sec,
     motion_detected,
     door_command,
     heat_alarm,
-    smoke_alarm
+    buzzer_on,
+    smoke_alarm,
+    smoke_ppm,
   } = telemetry;
 
-  // Luân phiên 3 trang, mỗi trang 3 giây
+  // Luân phiên 3 trang (0, 1, 2) mỗi 4 giây khớp với LCD_PAGE_MS = 4000UL trên bo ESP32 thật
   useEffect(() => {
     const timer = setInterval(() => {
-      setCurrentPage((prev) => (prev % 3) + 1);
-    }, 3000);
+      setCurrentPage((prev) => (prev + 1) % 3);
+    }, 4000);
     return () => clearInterval(timer);
   }, []);
 
-  // Tạo 2 dòng văn bản 16 ký tự của LCD 16x2
+  // 1. DÒNG 1: Cố định thông số DHT11 ở các trang thông thường, hoặc hiển thị cảnh báo khẩn cấp
   let line1 = '';
-  let line2 = '';
-
-  if (heat_alarm) {
-    // Khi cảnh báo nhiệt đang bật, LCD ưu tiên hiển thị cảnh báo nhiệt
-    line1 = '!CANH BAO NHIET!';
-    line2 = `T:${temperature_c !== null ? temperature_c.toFixed(1) : '--'}C COI+LED3`;
-  } else if (smoke_alarm) {
+  if (smoke_alarm) {
     line1 = '!CANH BAO KHOI!';
-    line2 = `KHOI:${telemetry.smoke_ppm}PPM NGUY`;
+  } else if (dht_ok && temperature_c !== null && humidity_pct !== null) {
+    line1 = `T:${temperature_c.toFixed(1)}C H:${humidity_pct.toFixed(0)}%`;
   } else {
+    line1 = 'DHT11: LOI/CHO';
+  }
+
+  // 2. DÒNG 2: Xử lý theo thứ tự ưu tiên (Khói -> Nhiệt -> PIR warm-up -> Luân phiên 3 trang)
+  let line2 = '';
+  if (smoke_alarm) {
+    // Ưu tiên cao nhất: Báo động khói / khí độc
+    line2 = `KHOI:${smoke_ppm}PPM NGUY`;
+  } else if (heat_alarm) {
+    // Ưu tiên cảnh báo nhiệt độ cao
+    line2 = buzzer_on ? 'NONG! L3:ON B:ON' : 'NONG! L3:ON B:OFF';
+  } else if (!pir_ready) {
+    // Ưu tiên khi PIR đang warm-up 60s
+    line2 = `PIR:${pir_warmup_remaining_sec}s L1:${led1_on ? 'ON' : 'OFF'}`;
+  } else {
+    // Luân phiên 3 trang bình thường (4 giây/trang)
     switch (currentPage) {
+      case 0:
+        line2 = `L1:${led1_on ? 'ON' : 'OFF'} L2:${led2_on ? 'ON' : 'OFF'}`;
+        break;
       case 1:
-        // Trang 1: Nhiệt độ, độ ẩm và trạng thái quạt
-        if (!dht_ok || temperature_c === null || humidity_pct === null) {
-          line1 = 'DHT11 DOC LOI!';
-          line2 = `QUAT: ${fan_on ? 'BAT' : 'TAT'}`;
-        } else {
-          line1 = `T:${temperature_c.toFixed(1)}C H:${humidity_pct.toFixed(0)}%`;
-          line2 = `QUAT: ${fan_on ? 'BAT ' : 'TAT '} (AUTO)`;
-        }
+        line2 = `C:${door_command === 'open' ? 'MO' : 'DONG'} Q:${fan_on ? 'ON' : 'OFF'}`;
         break;
-
       case 2:
-        // Trang 2: Sáng/tối, trạng thái PIR hoặc thời gian chờ khởi động
-        line1 = `AS: ${is_dark ? 'TOI (LED1 ON)' : 'SANG (LED1 OFF)'}`;
-        if (!pir_ready) {
-          line2 = `PIR KHOI DONG:${pir_warmup_remaining_sec}s`;
+        if (motion_detected) {
+          line2 = 'PIR:1 GIU CUA MO';
+        } else if (door_command === 'open') {
+          line2 = 'Dong cua sau 10s';
         } else {
-          line2 = `PIR: ${motion_detected ? 'CO NGUOI' : 'KHONG NGUOI'}`;
+          line2 = 'PIR:0 CUA DONG';
         }
-        break;
-
-      case 3:
-        // Trang 3: Lệnh cửa mở/đóng, trạng thái cảnh báo
-        line1 = `CUA: ${door_command === 'open' ? 'MO (90 DEG)' : 'DONG (0 DEG)'}`;
-        line2 = `ALARM: ${heat_alarm ? 'ACTIVE' : 'BINH THUONG'}`;
         break;
     }
   }
@@ -96,12 +102,23 @@ export const LCDSimulator: React.FC<LCDSimulatorProps> = ({ telemetry }) => {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[11px] font-medium text-slate-500">
-              {heat_alarm ? '🚨 Ưu tiên cảnh báo' : `Trang ${currentPage}/3 (Đổi mỗi 3s)`}
+              {smoke_alarm
+                ? '🔥 Báo động khói'
+                : heat_alarm
+                ? '🚨 Ưu tiên cảnh báo nhiệt'
+                : !pir_ready
+                ? '⏳ PIR Khởi động'
+                : `Trang ${currentPage + 1}/3 (Đổi mỗi 4s)`}
             </span>
             <div className="flex gap-1">
-              <span className={`w-2 h-2 rounded-full transition-colors ${currentPage === 1 && !heat_alarm ? 'bg-blue-600' : 'bg-slate-200'}`}></span>
-              <span className={`w-2 h-2 rounded-full transition-colors ${currentPage === 2 && !heat_alarm ? 'bg-blue-600' : 'bg-slate-200'}`}></span>
-              <span className={`w-2 h-2 rounded-full transition-colors ${currentPage === 3 && !heat_alarm ? 'bg-blue-600' : 'bg-slate-200'}`}></span>
+              {[0, 1, 2].map((p) => (
+                <span
+                  key={p}
+                  className={`w-2 h-2 rounded-full transition-colors ${
+                    currentPage === p && !heat_alarm && !smoke_alarm && pir_ready ? 'bg-blue-600' : 'bg-slate-200'
+                  }`}
+                />
+              ))}
             </div>
           </div>
         </div>
@@ -121,6 +138,7 @@ export const LCDSimulator: React.FC<LCDSimulatorProps> = ({ telemetry }) => {
 
       <div className="flex flex-wrap items-center justify-between text-[11px] text-slate-500 mt-3 pt-2 border-t border-slate-100">
         <span>Giao tiếp: I2C (SDA: GPIO 21, SCL: GPIO 22)</span>
+        <span className="font-mono text-[10px] text-slate-400">Khớp firmware updateLCD()</span>
       </div>
     </div>
   );

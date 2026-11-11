@@ -1,10 +1,10 @@
 import { ESP32Telemetry, DeviceThresholds, ScenarioType } from '../types/telemetry';
 
 export const DEFAULT_THRESHOLDS: DeviceThresholds = {
-  fan_on_temp: 35.0,
-  fan_off_temp: 34.0,
-  heat_alarm_on_temp: 40.0,
-  heat_alarm_off_temp: 37.0,
+  fan_on_temp: 30.0,
+  fan_off_temp: 29.5,
+  heat_alarm_on_temp: 31.0,
+  heat_alarm_off_temp: 30.0,
   smoke_alarm_ppm: 300,
 };
 
@@ -16,6 +16,7 @@ export const INITIAL_TELEMETRY: ESP32Telemetry = {
   pir_warmup_remaining_sec: 0,
   motion_detected: false,
   is_dark: false,
+  smoke_raw: 435,
   smoke_ppm: 85,
   smoke_detected: false,
   smoke_alarm: false,
@@ -127,14 +128,14 @@ export class MockTelemetryService {
         motion = false;
         break;
 
-      case 'cooling_fan': // Nhiệt độ >= 35°C
-        temp = 36.2 + +(Math.random() * 0.8 - 0.4).toFixed(1);
+      case 'cooling_fan': // Nhiệt độ >= 30.0°C
+        temp = 30.5 + +(Math.random() * 0.4 - 0.2).toFixed(1);
         hum = 60.0;
         smokePpm = 90;
         break;
 
-      case 'heat_alarm': // Nhiệt độ >= 40°C
-        temp = 41.5 + +(Math.random() * 0.6 - 0.3).toFixed(1);
+      case 'heat_alarm': // Nhiệt độ >= 31.0°C
+        temp = 32.0 + +(Math.random() * 0.6 - 0.3).toFixed(1);
         hum = 55.0;
         smokePpm = 110;
         break;
@@ -189,20 +190,19 @@ export class MockTelemetryService {
     let doorCmd = prev.door_command;
 
     if (prev.system_mode === 'auto') {
-      // 1. Chiếu sáng tự động: Cảm biến báo tối -> Bật LED1, sáng -> Tắt LED1
-      led1On = isDark;
+      // 1. Chiếu sáng tự động (Firmware mới): Trời tối VÀ PIR có chuyển động -> Bật LED1
+      led1On = isDark && motion;
 
-      // 2. Đón người về: PIR 0 -> 1 -> Bật LED2, Servo 90° (Mở cửa)
-      //    Đóng cửa: PIR 1 -> 0 -> Tắt LED2, Servo 0° (Đóng cửa)
+      // 2. Đón người về: PIR 0 -> 1 -> Servo 90° (Mở cửa), LED2 = doorOpen
+      //    Đóng cửa: PIR 1 -> 0 -> Servo 0° (Đóng cửa), LED2 = doorOpen
       if (pirReady) {
         if (motion) {
-          led2On = true;
           doorCmd = 'open';
         } else {
-          led2On = false;
           doorCmd = 'closed';
         }
       }
+      led2On = (doorCmd === 'open');
 
       // 3. Quạt & Cảnh báo nhiệt với 2 vùng trễ (Hysteresis) theo specification.md
       if (dhtOk && temp !== null) {

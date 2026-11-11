@@ -70,7 +70,7 @@ export const App: React.FC = () => {
       if (backendStatus.isServerConnected) {
         await backendService.setSystemMode(newMode);
         setAppToast({
-          message: `Đã chuyển hệ thống sang chế độ ${newMode === 'auto' ? 'TỰ ĐỘNG' : 'THỦ CÔNG'} trên Backend!`,
+          message: `Đã chuyển sang chế độ ${newMode === 'auto' ? 'TỰ ĐỘNG' : 'THỦ CÔNG'}!`,
         });
       } else {
         mockService.setSystemMode(newMode);
@@ -194,6 +194,7 @@ export const App: React.FC = () => {
         <ControlPanel
           telemetry={telemetry}
           onSwitchToManual={() => handleModeChange('manual')}
+          onSwitchToAuto={() => handleModeChange('auto')}
         />
 
         {/* 5. GIAI ĐOẠN 4: BIỂU ĐỒ LỊCH SỬ & BỘ LỌC THỜI GIAN (HISTORY CHARTS & TIME FILTER) */}

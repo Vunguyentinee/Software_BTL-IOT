@@ -19,6 +19,7 @@ import { commandService } from '../../services/commandService';
 interface ControlPanelProps {
   telemetry: ESP32Telemetry;
   onSwitchToManual: () => void;
+  onSwitchToAuto: () => void;
 }
 
 interface ToastNotification {
@@ -27,7 +28,7 @@ interface ToastNotification {
   message: string;
 }
 
-export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchToManual }) => {
+export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchToManual, onSwitchToAuto }) => {
   const {
     fan_on,
     door_command,
@@ -79,7 +80,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchT
       buttonAction: door_command === 'open' ? 'Đóng cửa' : 'Mở cửa',
       nextValue: door_command !== 'open',
       icon: door_command === 'open' ? <DoorOpen className="w-5 h-5 text-emerald-600" /> : <DoorClosed className="w-5 h-5 text-slate-400" />,
-      activeColorClass: 'border-emerald-300 bg-emerald-50/50'
+      activeColorClass: 'border-emerald-300 bg-emerald-50/50',
+      isReadOnly: false,
     },
     {
       target: 'fan' as DeviceTarget,
@@ -92,59 +94,67 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchT
       buttonAction: fan_on ? 'Tắt quạt' : 'Bật quạt',
       nextValue: !fan_on,
       icon: <Fan className={`w-5 h-5 ${fan_on ? 'text-blue-600 animate-spin' : 'text-slate-400'}`} />,
-      activeColorClass: 'border-blue-300 bg-blue-50/50'
+      activeColorClass: 'border-blue-300 bg-blue-50/50',
+      isReadOnly: false,
     },
     {
       target: 'led1' as DeviceTarget,
       name: 'Đèn Chiếu Sáng (LED1)',
       pin: 'GPIO 12',
-      desc: 'Chiếu sáng sinh hoạt khi trời tối',
+      desc: 'Auto: Bật khi tối VÀ có người (PIR). Manual: Lệnh Web ưu tiên.',
       currentState: led1_on,
       activeText: 'ĐANG SÁNG',
       inactiveText: 'TẮT',
       buttonAction: led1_on ? 'Tắt LED1' : 'Bật LED1',
       nextValue: !led1_on,
       icon: <Lightbulb className={`w-5 h-5 ${led1_on ? 'text-amber-500 fill-amber-500/20' : 'text-slate-400'}`} />,
-      activeColorClass: 'border-amber-300 bg-amber-50/50'
+      activeColorClass: 'border-amber-300 bg-amber-50/50',
+      isReadOnly: false,
     },
     {
       target: 'led2' as DeviceTarget,
       name: 'Đèn Đón Khách (LED2)',
       pin: 'GPIO 14',
-      desc: 'Báo hiệu khi có người (PIR)',
+      desc: 'Báo hiệu trạng thái Cửa (đồng bộ theo góc quay Servo)',
       currentState: led2_on,
       activeText: 'ĐANG SÁNG',
       inactiveText: 'TẮT',
-      buttonAction: led2_on ? 'Tắt LED2' : 'Bật LED2',
-      nextValue: !led2_on,
+      buttonAction: '',
+      nextValue: false,
       icon: <Lightbulb className={`w-5 h-5 ${led2_on ? 'text-cyan-600 fill-cyan-600/20' : 'text-slate-400'}`} />,
-      activeColorClass: 'border-cyan-300 bg-cyan-50/50'
+      activeColorClass: 'border-cyan-300 bg-cyan-50/50',
+      isReadOnly: true,
+      autoNotice: 'Tự động đồng bộ theo Cửa',
     },
     {
       target: 'led3' as DeviceTarget,
       name: 'Đèn Báo Nhiệt (LED3)',
       pin: 'GPIO 27',
-      desc: 'Đèn đỏ cảnh báo nhiệt độ cao',
+      desc: 'Đèn đỏ cảnh báo quá nhiệt (đồng bộ theo Quá nhiệt)',
       currentState: led3_on,
       activeText: 'ĐANG BÁO ĐỘNG',
       inactiveText: 'TẮT',
-      buttonAction: led3_on ? 'Tắt LED3' : 'Bật LED3',
-      nextValue: !led3_on,
+      buttonAction: '',
+      nextValue: false,
       icon: <ShieldAlert className={`w-5 h-5 ${led3_on ? 'text-rose-600 animate-pulse' : 'text-slate-400'}`} />,
-      activeColorClass: 'border-rose-300 bg-rose-50/50'
+      activeColorClass: 'border-rose-300 bg-rose-50/50',
+      isReadOnly: true,
+      autoNotice: 'Tự động theo Quá nhiệt',
     },
     {
       target: 'buzzer' as DeviceTarget,
       name: 'Còi Cảnh Báo (Buzzer)',
       pin: 'GPIO 25',
-      desc: 'Còi hú xung ngắt quãng 300ms/300ms',
+      desc: 'Còi hú xung ngắt quãng 300ms/300ms khi quá nhiệt',
       currentState: buzzer_on,
       activeText: 'ĐANG HÚ CÒI',
       inactiveText: 'YÊN LẶNG',
-      buttonAction: buzzer_on ? 'Tắt còi' : 'Hú còi test',
-      nextValue: !buzzer_on,
+      buttonAction: '',
+      nextValue: false,
       icon: <Volume2 className={`w-5 h-5 ${buzzer_on ? 'text-rose-600 animate-bounce' : 'text-slate-400'}`} />,
-      activeColorClass: 'border-rose-300 bg-rose-50/50'
+      activeColorClass: 'border-rose-300 bg-rose-50/50',
+      isReadOnly: true,
+      autoNotice: 'Tự động theo Quá nhiệt',
     }
   ];
 
@@ -159,7 +169,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchT
           </div>
           <div>
             <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
-              Bảng Điều Khiển Thiết Bị Chấp Hành (Manual Controls)
+              Bảng Điều Khiển Thiết Bị(Manual Controls)
             </h3>
             <p className="text-xs text-slate-500">
               Gửi lệnh điều khiển trực tiếp tới ESP32 kèm cơ chế phản hồi xác nhận (Ack) & Timeout
@@ -175,13 +185,15 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchT
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 transition-all cursor-pointer shadow-xs"
             >
               <Lock className="w-3.5 h-3.5 text-amber-600" />
-              <span>Chế độ Auto (Bấm để đổi sang Manual)</span>
+              <span>Chế độ Auto</span>
             </button>
           ) : (
-            <span className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-xs">
+            <button 
+            onClick={onSwitchToAuto}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-xs">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span>Chế độ Manual: Sẵn sàng nhận lệnh</span>
-            </span>
+              <span>Chế độ Thủ công</span>
+            </button>
           )}
         </div>
       </div>
@@ -211,7 +223,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchT
       )}
 
       {/* THÔNG BÁO KHÓA CHẾ ĐỘ AUTO */}
-      {isAuto && (
+      {/* {isAuto && (
         <div className="mb-4 p-3.5 rounded-xl bg-amber-50/80 border border-amber-200 flex items-center justify-between text-xs text-amber-900 shadow-xs">
           <div className="flex items-center gap-2">
             <Lock className="w-4 h-4 text-amber-600 shrink-0" />
@@ -226,7 +238,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchT
             Chuyển ngay
           </button>
         </div>
-      )}
+      )} */}
 
       {/* DANH SÁCH 6 THIẾT BỊ ĐIỀU KHIỂN */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -266,35 +278,42 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchT
                 <p className="text-xs text-slate-500 mb-3">{device.desc}</p>
               </div>
 
-              {/* ACTION BUTTON */}
-              <button
-                type="button"
-                disabled={isAuto || isLoading}
-                onClick={() => handleExecute(device.target, device.nextValue)}
-                className={`w-full py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${
-                  isAuto
-                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
-                    : isLoading
-                    ? 'bg-blue-600/70 text-white cursor-wait'
-                    : device.currentState
-                    ? 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 shadow-xs'
-                    : 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs active:scale-[0.98]'
-                }`}
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin text-white" />
-                    <span>Đang gửi lệnh...</span>
-                  </>
-                ) : isAuto ? (
-                  <>
-                    <Lock className="w-3.5 h-3.5 text-slate-400" />
-                    <span>Khóa (Chế độ Auto)</span>
-                  </>
-                ) : (
-                  <span>{device.buttonAction}</span>
-                )}
-              </button>
+              {/* ACTION BUTTON OR READONLY INDICATOR */}
+              {device.isReadOnly ? (
+                <div className="w-full py-2 px-3 rounded-lg text-xs font-semibold bg-slate-100 text-slate-500 border border-slate-200 flex items-center justify-center gap-1.5 select-none">
+                  <Lock className="w-3.5 h-3.5 text-slate-400" />
+                  <span>{device.autoNotice || 'Điều khiển tự động bởi ESP32'}</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={isAuto || isLoading}
+                  onClick={() => handleExecute(device.target, device.nextValue)}
+                  className={`w-full py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${
+                    isAuto
+                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
+                      : isLoading
+                      ? 'bg-blue-600/70 text-white cursor-wait'
+                      : device.currentState
+                      ? 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 shadow-xs'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs active:scale-[0.98]'
+                  }`}
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span>Đang gửi lệnh...</span>
+                    </>
+                  ) : isAuto ? (
+                    <>
+                      <Lock className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Khóa (Chế độ Auto)</span>
+                    </>
+                  ) : (
+                    <span>{device.buttonAction}</span>
+                  )}
+                </button>
+              )}
             </div>
           );
         })}

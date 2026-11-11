@@ -44,18 +44,18 @@ export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry }) => {
               <div>
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm font-bold text-rose-900 uppercase tracking-wide">
-                    Cảnh báo nhiệt độ khẩn cấp: {temperature_c !== null ? `${temperature_c}°C` : '≥ 40°C'}
+                    Cảnh báo nhiệt độ cao: {temperature_c !== null ? `${temperature_c}°C` : `≥ ${thresholds.heat_alarm_on_temp ?? 31.0}°C`}
                   </h3>
                   <span className="px-2.5 py-0.5 text-[10px] font-extrabold uppercase bg-rose-600 text-white rounded-full">
                     Nguy hiểm
                   </span>
                 </div>
                 <p className="text-xs text-rose-800 mt-1 leading-relaxed">
-                  Nhiệt độ phòng đã vượt ngưỡng 40.0°C! Đèn LED3 cảnh báo đang bật, còi báo động kêu ngắt quãng (300ms bật / 300ms tắt). Hệ thống duy trì quạt làm mát tối đa cho đến khi nhiệt độ hạ xuống dưới 37.0°C.
+                  Nhiệt độ phòng vượt ngưỡng cảnh báo ({thresholds.heat_alarm_on_temp ?? 31.0}°C)! Hệ thống duy trì quạt làm mát tối đa.
                 </p>
                 <div className="flex flex-wrap items-center gap-4 mt-2.5 text-xs font-semibold text-rose-900">
                   <span className="flex items-center gap-1.5 bg-rose-100/80 px-2.5 py-1 rounded-lg">
-                    <Volume2 className="w-4 h-4 text-rose-700" /> Còi Buzzer (GPIO 25): Đang kêu
+                    <Volume2 className="w-4 h-4 text-rose-700" /> Còi Buzzer (GPIO 25): BẬT
                   </span>
                   <span className="flex items-center gap-1.5 bg-rose-100/80 px-2.5 py-1 rounded-lg">
                     <ShieldAlert className="w-4 h-4 text-rose-700" /> LED3 (GPIO 27): BẬT
@@ -87,7 +87,7 @@ export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry }) => {
                 </span>
               </div>
               <p className="text-xs text-amber-800 mt-1 leading-relaxed">
-                Phát hiện mật độ khói/khí độc tăng đột biến trong khu vực giám sát. Hãy kiểm tra ngay nguồn nhiệt và thông gió!
+                Mật độ khói/khí độc tăng đột biến trong khu vực giám sát. Hãy kiểm tra ngay nguồn nhiệt và thông gió!
               </p>
               {pump_on && (
                 <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold bg-blue-100/80 text-blue-900 px-2.5 py-1 rounded-lg">
