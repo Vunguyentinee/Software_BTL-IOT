@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import * as THREE from 'three';
 import { ESP32Telemetry } from '../../types/telemetry';
+import { HouseLCD } from './HouseLCD';
 
 interface HouseGeometryProps {
   telemetry: ESP32Telemetry;
@@ -174,17 +175,8 @@ export const HouseGeometry: React.FC<HouseGeometryProps> = ({ telemetry }) => {
       {/* Tường hồi phải: giữa */}
       <CrossWindow position={[10.4, 8, 0]} rotation={[0, Math.PI / 2, 0]} />
 
-      {/* ===== LCD STRIP (mặt trước, bên trái) ===== */}
-      {/* Khung LCD */}
-      <mesh position={[-4, 7.5, -7.9]}>
-        <boxGeometry args={[8, 2.5, 0.3]} />
-        <meshStandardMaterial color="#1a1a2e" roughness={0.3} metalness={0.2} />
-      </mesh>
-      {/* Màn hình LCD hiển thị xanh */}
-      <mesh position={[-4, 7.5, -8.1]}>
-        <boxGeometry args={[7.2, 1.8, 0.1]} />
-        <meshStandardMaterial color="#0284c7" emissive="#0369a1" emissiveIntensity={0.6} />
-      </mesh>
+      {/* ===== MÀN HÌNH LCD 16X2 ĐỒNG BỘ THỜI GIAN THỰC ===== */}
+      <HouseLCD telemetry={telemetry} />
 
       {/* ===== PIR SENSOR (phải tường trước) ===== */}
       <mesh position={[6.5, 7.5, -7.9]}>
