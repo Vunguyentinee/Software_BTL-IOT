@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import * as THREE from 'three';
 import { ESP32Telemetry } from '../../types/telemetry';
 import { HouseLCD } from './HouseLCD';
+import { HouseDoor } from './HouseDoor';
 
 interface HouseGeometryProps {
   telemetry: ESP32Telemetry;
@@ -195,22 +196,8 @@ export const HouseGeometry: React.FC<HouseGeometryProps> = ({ telemetry }) => {
         />
       </mesh>
 
-      {/* ===== KHUNG CỬA VÒM (nửa bên PHẢI mặt tiền, dưới PIR) ===== */}
-      {/* Frame trên */}
-      <mesh position={[-1.5, 4.4, -7.84]}>
-        <boxGeometry args={[4.4, 0.4, 0.25]} />
-        <meshStandardMaterial color={woodColor} roughness={0.7} />
-      </mesh>
-      {/* Frame trái (bản lề servo) */}
-      <mesh position={[-3.5, 2.2, -7.84]}>
-        <boxGeometry args={[0.4, 4.2, 0.25]} />
-        <meshStandardMaterial color={woodColor} roughness={0.7} />
-      </mesh>
-      {/* Frame phải */}
-      <mesh position={[0.5, 2.2, -7.84]}>
-        <boxGeometry args={[0.4, 4.2, 0.25]} />
-        <meshStandardMaterial color={woodColor} roughness={0.7} />
-      </mesh>
+      {/* ===== HỆ THỐNG CỬA VÒM & CƠ CẤU SERVO SG90 THỰC TẾ ===== */}
+      <HouseDoor telemetry={telemetry} />
 
       {/* ===== MÁI NHÀ ===== */}
       <group position={[0, 15, 0]}>

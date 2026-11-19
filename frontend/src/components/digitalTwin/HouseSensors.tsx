@@ -80,44 +80,8 @@ function Fan({ fanOn }: { fanOn: boolean }) {
   );
 }
 
-/** Cửa servo xoay ngang (pivot từ mép trái) */
-function ServoDoor({ doorOpen }: { doorOpen: boolean }) {
-  const doorRef = useRef<THREE.Group>(null);
-  const targetAngle = doorOpen ? -Math.PI * 0.85 : 0;
-  const currentAngle = useRef(0);
-
-  useFrame((_, delta) => {
-    if (doorRef.current) {
-      currentAngle.current += (targetAngle - currentAngle.current) * Math.min(1, delta * 3);
-      doorRef.current.rotation.y = currentAngle.current;
-    }
-  });
-
-  return (
-    // Pivot tại mép trái cửa (X = -3.5, Y = 2.2, Z = -7.7)
-    <group position={[-3.5, 2.2, -7.7]}>
-      <group ref={doorRef}>
-        {/* Cánh cửa (pivot tại X=0, cánh rộng 3.8 kéo dài về X+) */}
-        <mesh position={[1.9, 0, 0]}>
-          <boxGeometry args={[3.8, 4.0, 0.22]} />
-          <meshStandardMaterial
-            color={doorOpen ? '#B58850' : '#C8A96E'}
-            roughness={0.7}
-          />
-        </mesh>
-        {/* Tay nắm cửa */}
-        <mesh position={[3.4, 0, -0.22]}>
-          <sphereGeometry args={[0.22, 8, 6]} />
-          <meshStandardMaterial color="#334155" metalness={0.7} roughness={0.3} />
-        </mesh>
-      </group>
-    </group>
-  );
-}
-
 export const HouseSensors: React.FC<HouseSensorsProps> = ({ telemetry, showLabels = true }) => {
-  const { fan_on, door_command, temperature_c, humidity_pct, smoke_ppm, smoke_alarm, pir_ready } = telemetry;
-  const doorOpen = door_command === 'open';
+  const { fan_on, temperature_c, humidity_pct, smoke_ppm, smoke_alarm, pir_ready } = telemetry;
 
   return (
     <group>
@@ -216,9 +180,6 @@ export const HouseSensors: React.FC<HouseSensorsProps> = ({ telemetry, showLabel
           visible={showLabels}
         />
       </group>
-
-      {/* ===== CÁNH CỬA SERVO ===== */}
-      <ServoDoor doorOpen={doorOpen} />
     </group>
   );
 };
