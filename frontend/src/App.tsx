@@ -215,8 +215,20 @@ export const App: React.FC = () => {
 
         {activeTab === '3d' ? (
           /* ===== TAB BẢN SAO SỐ 3D ===== */
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
-            <HouseDigitalTwin telemetry={telemetry} />
+          <div className="space-y-6">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
+              <HouseDigitalTwin
+                telemetry={telemetry}
+                onModeChange={handleModeChange}
+              />
+            </div>
+
+            {/* BẢNG ĐIỀU KHIỂN THIẾT BỊ CHẤP HÀNH TƯƠNG TỰ DASHBOARD */}
+            <ControlPanel
+              telemetry={telemetry}
+              onSwitchToManual={() => handleModeChange('manual')}
+              onSwitchToAuto={() => handleModeChange('auto')}
+            />
           </div>
         ) : (
           /* ===== TAB DASHBOARD CHÍNH ===== */
