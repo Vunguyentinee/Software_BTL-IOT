@@ -10,16 +10,20 @@ import { ActivityLog } from './components/dashboard/ActivityLog';
 import { activityLog } from './services/activityLog';
 import { HistorySection } from './components/charts/HistorySection';
 import { ThresholdModal } from './components/config/ThresholdModal';
+import { HouseDigitalTwin } from './components/digitalTwin';
 import { backendService, BackendConnectionStatus } from './services/backendService';
 import { mockService } from './services/mockData';
 import { ESP32Telemetry, SystemMode, ScenarioType, DeviceThresholds } from './types/telemetry';
 import { BackendSim } from './types/api';
 import { CheckCircle2, AlertCircle } from 'lucide-react';
 
+type AppTab = 'dashboard' | '3d';
+
 export const App: React.FC = () => {
   const [telemetry, setTelemetry] = useState<ESP32Telemetry>(backendService.getCurrentTelemetry());
   const [currentScenario, setCurrentScenario] = useState<ScenarioType>('normal');
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
   const [appToast, setAppToast] = useState<{ message: string; isError?: boolean } | null>(null);
   const [backendStatus, setBackendStatus] = useState<BackendConnectionStatus>(backendService.getStatus());
   const [sim, setSim] = useState<BackendSim>(backendService.getSim());
@@ -184,31 +188,66 @@ export const App: React.FC = () => {
 
       {/* MAIN CONTAINER */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {/* 2. CẢNH BÁO KHẨN CẤP & LỖI CẢM BIẾN */}
-        <AlertBanner telemetry={telemetry} />
 
-        {/* 3. 4 CARD CHỈ SỐ MÔI TRƯỜNG CHÍNH */}
-        <MetricCardsGrid telemetry={telemetry} />
-
-        {/* 4. GIAI ĐOẠN 3: BẢNG ĐIỀU KHIỂN THIẾT BỊ CHẤP HÀNH (CONTROL PANEL) */}
-        <ControlPanel
-          telemetry={telemetry}
-          onSwitchToManual={() => handleModeChange('manual')}
-          onSwitchToAuto={() => handleModeChange('auto')}
-        />
-
-        {/* 5. GIAI ĐOẠN 4: BIỂU ĐỒ LỊCH SỬ & BỘ LỌC THỜI GIAN (HISTORY CHARTS & TIME FILTER) */}
-        <HistorySection telemetry={telemetry} />
-
-        {/* 6. MÔ PHỎNG LCD 16X2 & TỔNG QUAN NGOẠI VI VẬT LÝ */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <LCDSimulator telemetry={telemetry} />
-          <JsonTelemetryViewer telemetry={telemetry} />
+        {/* TAB SWITCHER */}
+        <div className="flex gap-2 mb-5">
+          <button
+            onClick={() => setActiveTab('dashboard')}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+              activeTab === 'dashboard'
+                ? 'bg-blue-600 text-white shadow-md shadow-blue-200'
+                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            📊 Dashboard
+          </button>
+          <button
+            onClick={() => setActiveTab('3d')}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+              activeTab === '3d'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200'
+                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            🏠 Mô hình 3D
+          </button>
         </div>
 
-        {/* 7. NHẬT KÝ THỰC THI LỆNH (COMMAND ACK LOG) */}
-        <ActivityLog live={backendStatus.isServerConnected} />
-        <CommandLogTable />
+        {activeTab === '3d' ? (
+          /* ===== TAB BẢN SAO SỐ 3D ===== */
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
+            <HouseDigitalTwin telemetry={telemetry} />
+          </div>
+        ) : (
+          /* ===== TAB DASHBOARD CHÍNH ===== */
+          <>
+            {/* 2. CẢNH BÁO KHẨN CẤP & LỖI CẢM BIẾN */}
+            <AlertBanner telemetry={telemetry} />
+
+            {/* 3. 4 CARD CHỈ SỐ MÔI TRƯỜNG CHÍNH */}
+            <MetricCardsGrid telemetry={telemetry} />
+
+            {/* 4. GIAI ĐOẠN 3: BẢNG ĐIỀU KHIỂN THIẾT BỊ CHẤP HÀNH (CONTROL PANEL) */}
+            <ControlPanel
+              telemetry={telemetry}
+              onSwitchToManual={() => handleModeChange('manual')}
+              onSwitchToAuto={() => handleModeChange('auto')}
+            />
+
+            {/* 5. GIAI ĐOẠN 4: BIỂU ĐỒ LỊCH SỬ & BỘ LỌC THỜI GIAN (HISTORY CHARTS & TIME FILTER) */}
+            <HistorySection telemetry={telemetry} />
+
+            {/* 6. MÔ PHỎNG LCD 16X2 & TỔNG QUAN NGOẠI VI VẬT LÝ */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <LCDSimulator telemetry={telemetry} />
+              <JsonTelemetryViewer telemetry={telemetry} />
+            </div>
+
+            {/* 7. NHẬT KÝ THỰC THI LỆNH (COMMAND ACK LOG) */}
+            <ActivityLog live={backendStatus.isServerConnected} />
+            <CommandLogTable />
+          </>
+        )}
       </main>
 
       {/* MODAL CẤU HÌNH NGƯỠNG */}
