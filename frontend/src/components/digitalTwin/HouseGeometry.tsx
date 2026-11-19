@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { ESP32Telemetry } from '../../types/telemetry';
 import { HouseLCD } from './HouseLCD';
 import { HouseDoor } from './HouseDoor';
+import { HouseLEDs } from './HouseLEDs';
 
 interface HouseGeometryProps {
   telemetry: ESP32Telemetry;
@@ -91,20 +92,9 @@ function GableRoof() {
 }
 
 export const HouseGeometry: React.FC<HouseGeometryProps> = ({ telemetry }) => {
-  const { temperature_c, thresholds } = telemetry;
-
-  // Màu tường theo nhiệt độ: 20°C=xanh lạnh → 35°C=đỏ cam
-  const tempMin = 20;
-  const tempMax = thresholds?.heat_alarm_on_temp ?? 35;
-  const tempRatio = Math.max(0, Math.min(1, ((temperature_c ?? 25) - tempMin) / (tempMax - tempMin)));
-
-  const wallColor = useMemo(() => {
-    const cold = new THREE.Color('#D4E8F5'); // xanh nhạt
-    const hot = new THREE.Color('#FF8C42');  // cam nóng
-    return cold.clone().lerp(hot, tempRatio);
-  }, [tempRatio]);
-
-  const woodColor = '#C8A96E'; // màu gỗ MDF
+  // Tường nhà giữ màu gỗ MDF tự nhiên như mô hình thật
+  const wallColor = '#C89D66'; // Màu gỗ MDF tự nhiên
+  const woodColor = '#C8A96E'; // Màu chi tiết khung gỗ
 
   return (
     <group>
@@ -193,6 +183,9 @@ export const HouseGeometry: React.FC<HouseGeometryProps> = ({ telemetry }) => {
 
       {/* ===== HỆ THỐNG CỬA VÒM & CƠ CẤU SERVO SG90 THỰC TẾ ===== */}
       <HouseDoor telemetry={telemetry} />
+
+      {/* ===== HỆ THỐNG ĐÈN LED 3D VẬT LÝ PHÁT SÁNG (LED1, LED2, LED3) ===== */}
+      <HouseLEDs telemetry={telemetry} />
 
       {/* ===== MÁI NHÀ ===== */}
       <group position={[0, 15, 0]}>
