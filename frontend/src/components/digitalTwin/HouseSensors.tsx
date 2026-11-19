@@ -94,20 +94,20 @@ function ServoDoor({ doorOpen }: { doorOpen: boolean }) {
   });
 
   return (
-    // Pivot tại mép trái cửa (X = -1.2, Y = 2.2, Z = -7.7)
-    <group position={[-1.2, 2.2, -7.7]}>
+    // Pivot tại mép trái cửa (X = -3.5, Y = 2.2, Z = -7.7)
+    <group position={[-3.5, 2.2, -7.7]}>
       <group ref={doorRef}>
-        {/* Cánh cửa (pivot tại X=0, cánh rộng 4.2 kéo dài về X+) */}
-        <mesh position={[2.1, 0, 0]}>
-          <boxGeometry args={[4.2, 4.0, 0.25]} />
+        {/* Cánh cửa (pivot tại X=0, cánh rộng 3.8 kéo dài về X+) */}
+        <mesh position={[1.9, 0, 0]}>
+          <boxGeometry args={[3.8, 4.0, 0.22]} />
           <meshStandardMaterial
             color={doorOpen ? '#B58850' : '#C8A96E'}
             roughness={0.7}
           />
         </mesh>
         {/* Tay nắm cửa */}
-        <mesh position={[3.8, 0, -0.25]}>
-          <sphereGeometry args={[0.25, 8, 6]} />
+        <mesh position={[3.4, 0, -0.22]}>
+          <sphereGeometry args={[0.22, 8, 6]} />
           <meshStandardMaterial color="#334155" metalness={0.7} roughness={0.3} />
         </mesh>
       </group>
@@ -201,8 +201,8 @@ export const HouseSensors: React.FC<HouseSensorsProps> = ({ telemetry, showLabel
         </group>
       </group>
 
-      {/* ===== PIR LABEL (tường trước, bên phải) ===== */}
-      <group position={[6.5, 10.5, -8.0]}>
+      {/* ===== PIR LABEL (tường trước, bên phải khi nhìn từ trước vào) ===== */}
+      <group position={[-6.5, 10.5, -8.0]}>
         <SensorLabel
           label="PIR GPIO32"
           value={

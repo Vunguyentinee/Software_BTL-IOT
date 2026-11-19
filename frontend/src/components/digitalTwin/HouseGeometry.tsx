@@ -7,7 +7,7 @@ interface HouseGeometryProps {
   telemetry: ESP32Telemetry;
 }
 
-/** Tạo geometry cửa sổ chữ thập (2 thanh giao nhau) */
+/** Tạo geometry cửa sổ chữ thập thanh thoát */
 function CrossWindow({
   position,
   rotation,
@@ -19,18 +19,18 @@ function CrossWindow({
     <group position={position} rotation={rotation}>
       {/* Thanh ngang */}
       <mesh>
-        <boxGeometry args={[4.5, 1, 0.4]} />
-        <meshStandardMaterial color="#2a1a0a" />
+        <boxGeometry args={[3.4, 0.6, 0.25]} />
+        <meshStandardMaterial color="#2a1a0a" roughness={0.7} />
       </mesh>
       {/* Thanh dọc */}
       <mesh>
-        <boxGeometry args={[1, 4.5, 0.4]} />
-        <meshStandardMaterial color="#2a1a0a" />
+        <boxGeometry args={[0.6, 3.4, 0.25]} />
+        <meshStandardMaterial color="#2a1a0a" roughness={0.7} />
       </mesh>
-      {/* Kính (trong suốt) */}
-      <mesh position={[0, 0, 0.2]}>
-        <boxGeometry args={[4.5, 4.5, 0.1]} />
-        <meshStandardMaterial color="#a8d4f5" transparent opacity={0.4} />
+      {/* Kính (trong suốt nhẹ) */}
+      <mesh position={[0, 0, 0.08]}>
+        <boxGeometry args={[3.4, 3.4, 0.06]} />
+        <meshStandardMaterial color="#a8d4f5" transparent opacity={0.35} roughness={0.2} />
       </mesh>
     </group>
   );
@@ -159,15 +159,15 @@ export const HouseGeometry: React.FC<HouseGeometryProps> = ({ telemetry }) => {
         <boxGeometry args={[2, 0.2, 2]} />
         <meshStandardMaterial color="#94a3b8" metalness={0.8} roughness={0.2} />
       </mesh>
-      {/* Servo motor xanh dương bên trong cửa */}
-      <mesh position={[-1.5, 1.5, -6.5]}>
-        <boxGeometry args={[2.2, 1.5, 1.2]} />
+      {/* Servo motor xanh dương bên trong cửa (gắn ở mép bản lề X = -3.5) */}
+      <mesh position={[-3.5, 1.5, -6.5]}>
+        <boxGeometry args={[1.5, 2.2, 1.2]} />
         <meshStandardMaterial color="#0284c7" roughness={0.3} />
       </mesh>
 
       {/* ===== CỬA SỔ CHỮ THẬP ===== */}
-      {/* Tường trước: chính giữa phía trên, dưới chóp mái */}
-      <CrossWindow position={[0, 11.5, -7.9]} />
+      {/* Tường trước: chính giữa phía trên, ngay dưới chóp mái */}
+      <CrossWindow position={[0, 12.0, -7.82]} />
 
       {/* Tường hồi trái: giữa */}
       <CrossWindow position={[-10.4, 8, 0]} rotation={[0, Math.PI / 2, 0]} />
@@ -175,17 +175,17 @@ export const HouseGeometry: React.FC<HouseGeometryProps> = ({ telemetry }) => {
       {/* Tường hồi phải: giữa */}
       <CrossWindow position={[10.4, 8, 0]} rotation={[0, Math.PI / 2, 0]} />
 
-      {/* ===== MÀN HÌNH LCD 16X2 ĐỒNG BỘ THỜI GIAN THỰC ===== */}
+      {/* ===== MÀN HÌNH LCD 16X2 ĐỒNG BỘ THỜI GIAN THỰC (nửa bên TRÁI mặt tiền) ===== */}
       <HouseLCD telemetry={telemetry} />
 
-      {/* ===== PIR SENSOR (phải tường trước) ===== */}
-      <mesh position={[6.5, 7.5, -7.9]}>
-        <boxGeometry args={[2.5, 2.5, 0.6]} />
+      {/* ===== PIR SENSOR (nửa bên PHẢI mặt tiền khi nhìn từ trước vào) ===== */}
+      <mesh position={[-6.5, 7.5, -7.84]}>
+        <boxGeometry args={[2.4, 2.4, 0.2]} />
         <meshStandardMaterial color="#1e293b" roughness={0.4} />
       </mesh>
-      {/* Dome PIR (Sphere bán cầu) */}
-      <mesh position={[6.5, 7.5, -8.3]}>
-        <sphereGeometry args={[0.9, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2]} />
+      {/* Dome PIR (Sphere bán cầu hướng ra trước Z âm) */}
+      <mesh position={[-6.5, 7.5, -8.05]} rotation={[-Math.PI / 2, 0, 0]}>
+        <sphereGeometry args={[0.85, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2]} />
         <meshStandardMaterial
           color={telemetry.motion_detected ? '#ef4444' : '#e2e8f0'}
           transparent
@@ -195,20 +195,20 @@ export const HouseGeometry: React.FC<HouseGeometryProps> = ({ telemetry }) => {
         />
       </mesh>
 
-      {/* ===== KHUNG CỬA VÒM (tường trước, bên dưới) ===== */}
-      {/* Frame trên cong vòm */}
-      <mesh position={[1, 4.5, -7.9]}>
-        <boxGeometry args={[4.8, 0.4, 0.4]} />
+      {/* ===== KHUNG CỬA VÒM (nửa bên PHẢI mặt tiền, dưới PIR) ===== */}
+      {/* Frame trên */}
+      <mesh position={[-1.5, 4.4, -7.84]}>
+        <boxGeometry args={[4.4, 0.4, 0.25]} />
         <meshStandardMaterial color={woodColor} roughness={0.7} />
       </mesh>
-      {/* Frame trái */}
-      <mesh position={[-1.2, 2.2, -7.9]}>
-        <boxGeometry args={[0.4, 4.2, 0.4]} />
+      {/* Frame trái (bản lề servo) */}
+      <mesh position={[-3.5, 2.2, -7.84]}>
+        <boxGeometry args={[0.4, 4.2, 0.25]} />
         <meshStandardMaterial color={woodColor} roughness={0.7} />
       </mesh>
       {/* Frame phải */}
-      <mesh position={[3.2, 2.2, -7.9]}>
-        <boxGeometry args={[0.4, 4.2, 0.4]} />
+      <mesh position={[0.5, 2.2, -7.84]}>
+        <boxGeometry args={[0.4, 4.2, 0.25]} />
         <meshStandardMaterial color={woodColor} roughness={0.7} />
       </mesh>
 

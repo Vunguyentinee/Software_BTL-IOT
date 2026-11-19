@@ -109,7 +109,7 @@ export const HouseDigitalTwin: React.FC<HouseDigitalTwinProps> = ({ telemetry })
       <Canvas
         className="w-full h-full rounded-2xl"
         style={{ background: 'linear-gradient(to bottom, #e8f4fd 0%, #c5ddf4 40%, #d4c9b8 100%)' }}
-        camera={{ position: [32, 28, 38], fov: 48 }}
+        camera={{ position: [22, 20, -36], fov: 46 }}
         shadows
       >
         <Suspense fallback={<LoadingFallback />}>
