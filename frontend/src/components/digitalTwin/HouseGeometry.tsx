@@ -35,43 +35,45 @@ function CrossWindow({
   );
 }
 
-/** Mái nhà dạng gable (2 mặt dốc + 2 tam giác hồi) */
+/** Độ cao đỉnh mái tính từ mép tường (căn 21 cm) */
+export const ROOF_PEAK_H = Math.sqrt(21); // ~4.5826 cm
+
+/** Mái nhà dạng gable (2 mặt dốc + 2 tam giác hồi trước/sau) */
 function GableRoof() {
-  // Tạo geometry mái bằng custom vertices
   const roofGeometry = useMemo(() => {
-    // Mặt cắt tam giác: đáy 20, đỉnh tại giữa, cao 21
     const geo = new THREE.BufferGeometry();
+    const h = ROOF_PEAK_H;
 
-    // 6 vertices cho mái (2 mặt dốc, dọc theo trục Z=15)
-    // Tọa độ: X từ -10→10, Y: đáy=0, đỉnh=21, Z: -7.5→7.5
+    // 2 mặt dốc + 2 tam giác hồi
+    // X: [-10, 10] (rộng 20cm), Z: [-7.5, 7.5] (sâu 15cm), Y: đỉnh = h
     const vertices = new Float32Array([
-      // Mặt dốc trái (nhìn từ trước)
-      -10, 0, -7.5, // 0
-      0, 21, -7.5,  // 1
-      -10, 0, 7.5,  // 2
+      // Mặt dốc trái (X: 0 -> -10)
+      -10, 0, -7.5,
+      0, h, -7.5,
+      -10, 0, 7.5,
 
-      0, 21, -7.5,  // 1
-      0, 21, 7.5,   // 3
-      -10, 0, 7.5,  // 2
+      0, h, -7.5,
+      0, h, 7.5,
+      -10, 0, 7.5,
 
-      // Mặt dốc phải
-      0, 21, -7.5,  // 1
-      10, 0, -7.5,  // 4
-      0, 21, 7.5,   // 3
+      // Mặt dốc phải (X: 0 -> 10)
+      0, h, -7.5,
+      10, 0, -7.5,
+      0, h, 7.5,
 
-      10, 0, -7.5,  // 4
-      10, 0, 7.5,   // 5
-      0, 21, 7.5,   // 3
+      10, 0, -7.5,
+      10, 0, 7.5,
+      0, h, 7.5,
 
       // Tam giác hồi mặt trước (Z = -7.5)
       -10, 0, -7.5,
       10, 0, -7.5,
-      0, 21, -7.5,
+      0, h, -7.5,
 
       // Tam giác hồi mặt sau (Z = 7.5)
       10, 0, 7.5,
       -10, 0, 7.5,
-      0, 21, 7.5,
+      0, h, 7.5,
     ]);
 
     geo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
@@ -80,8 +82,8 @@ function GableRoof() {
   }, []);
 
   return (
-    <mesh geometry={roofGeometry} castShadow>
-      <meshStandardMaterial color="#8B6914" side={THREE.DoubleSide} roughness={0.8} />
+    <mesh geometry={roofGeometry} castShadow receiveShadow>
+      <meshStandardMaterial color="#B58850" side={THREE.DoubleSide} roughness={0.7} />
     </mesh>
   );
 }
@@ -112,10 +114,19 @@ export const HouseGeometry: React.FC<HouseGeometryProps> = ({ telemetry }) => {
         <meshStandardMaterial color={wallColor} roughness={0.6} />
       </mesh>
 
-      {/* Tường dọc sau (mặt Z = +7.5) */}
-      <mesh position={[0, 7.5, 7.65]} castShadow receiveShadow>
-        <boxGeometry args={[20, 15, 0.3]} />
+      {/* Tường dọc sau (mặt Z = +7.5) - Để hở như mô hình thực tế (ảnh 4, 5) để quan sát mạch ESP32 */}
+      <mesh position={[0, 1.5, 7.65]} castShadow receiveShadow>
+        <boxGeometry args={[20, 3, 0.3]} />
         <meshStandardMaterial color={wallColor} roughness={0.6} />
+      </mesh>
+      {/* 2 cột góc sau giữ khung mái */}
+      <mesh position={[-9.85, 7.5, 7.65]}>
+        <boxGeometry args={[0.3, 15, 0.3]} />
+        <meshStandardMaterial color={woodColor} roughness={0.7} />
+      </mesh>
+      <mesh position={[9.85, 7.5, 7.65]}>
+        <boxGeometry args={[0.3, 15, 0.3]} />
+        <meshStandardMaterial color={woodColor} roughness={0.7} />
       </mesh>
 
       {/* Tường hồi trái (mặt X = -10) */}
@@ -131,64 +142,81 @@ export const HouseGeometry: React.FC<HouseGeometryProps> = ({ telemetry }) => {
       </mesh>
 
       {/* Sàn nhà */}
-      <mesh position={[0, 0, 0]} receiveShadow>
+      <mesh position={[0, 0.15, 0]} receiveShadow>
         <boxGeometry args={[20, 0.3, 15]} />
         <meshStandardMaterial color="#8B7355" roughness={0.9} />
       </mesh>
 
+      {/* ===== NỘI THẤT BÊN TRONG (mạch ESP32 & Servo bên trong như thật) ===== */}
+      {/* Board ESP32 (màu đen/xanh) */}
+      <mesh position={[2, 0.5, 1]}>
+        <boxGeometry args={[5, 0.3, 3]} />
+        <meshStandardMaterial color="#1e293b" metalness={0.5} roughness={0.4} />
+      </mesh>
+      {/* Chip ESP32 kim loại */}
+      <mesh position={[2, 0.75, 1]}>
+        <boxGeometry args={[2, 0.2, 2]} />
+        <meshStandardMaterial color="#94a3b8" metalness={0.8} roughness={0.2} />
+      </mesh>
+      {/* Servo motor xanh dương bên trong cửa */}
+      <mesh position={[-1.5, 1.5, -6.5]}>
+        <boxGeometry args={[2.2, 1.5, 1.2]} />
+        <meshStandardMaterial color="#0284c7" roughness={0.3} />
+      </mesh>
+
       {/* ===== CỬA SỔ CHỮ THẬP ===== */}
-      {/* Tường trước: góc trên trái */}
-      <CrossWindow position={[-6, 11, -7.9]} />
+      {/* Tường trước: chính giữa phía trên, dưới chóp mái */}
+      <CrossWindow position={[0, 11.5, -7.9]} />
 
       {/* Tường hồi trái: giữa */}
-      <CrossWindow position={[-10.4, 10, 0]} rotation={[0, Math.PI / 2, 0]} />
+      <CrossWindow position={[-10.4, 8, 0]} rotation={[0, Math.PI / 2, 0]} />
 
       {/* Tường hồi phải: giữa */}
-      <CrossWindow position={[10.4, 10, 0]} rotation={[0, Math.PI / 2, 0]} />
+      <CrossWindow position={[10.4, 8, 0]} rotation={[0, Math.PI / 2, 0]} />
 
-      {/* ===== LCD STRIP (mặt trước, giữa) ===== */}
-      {/* Nền LCD */}
-      <mesh position={[-1, 7, -7.9]}>
+      {/* ===== LCD STRIP (mặt trước, bên trái) ===== */}
+      {/* Khung LCD */}
+      <mesh position={[-4, 7.5, -7.9]}>
         <boxGeometry args={[8, 2.5, 0.3]} />
         <meshStandardMaterial color="#1a1a2e" roughness={0.3} metalness={0.2} />
       </mesh>
-      {/* Màn hình LCD (xanh lá hoặc xanh dương) */}
-      <mesh position={[-1, 7, -8.1]}>
-        <boxGeometry args={[7.5, 2, 0.1]} />
-        <meshStandardMaterial color="#0d6b2e" emissive="#0d6b2e" emissiveIntensity={0.4} />
+      {/* Màn hình LCD hiển thị xanh */}
+      <mesh position={[-4, 7.5, -8.1]}>
+        <boxGeometry args={[7.2, 1.8, 0.1]} />
+        <meshStandardMaterial color="#0284c7" emissive="#0369a1" emissiveIntensity={0.6} />
       </mesh>
 
       {/* ===== PIR SENSOR (phải tường trước) ===== */}
-      <mesh position={[7, 8, -7.9]}>
-        <boxGeometry args={[2, 2, 0.8]} />
-        <meshStandardMaterial color="#2d2d2d" roughness={0.4} />
+      <mesh position={[6.5, 7.5, -7.9]}>
+        <boxGeometry args={[2.5, 2.5, 0.6]} />
+        <meshStandardMaterial color="#1e293b" roughness={0.4} />
       </mesh>
-      {/* Dome PIR (Sphere) */}
-      <mesh position={[7, 8, -8.5]}>
-        <sphereGeometry args={[0.8, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2]} />
+      {/* Dome PIR (Sphere bán cầu) */}
+      <mesh position={[6.5, 7.5, -8.3]}>
+        <sphereGeometry args={[0.9, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2]} />
         <meshStandardMaterial
-          color={telemetry.motion_detected ? '#ff4444' : '#cccccc'}
+          color={telemetry.motion_detected ? '#ef4444' : '#e2e8f0'}
           transparent
-          opacity={0.8}
-          roughness={0.1}
-          metalness={0.3}
+          opacity={0.85}
+          roughness={0.2}
+          metalness={0.1}
         />
       </mesh>
 
-      {/* ===== KHUNG CỬA VÒNG (tường trước, dưới giữa) ===== */}
-      {/* Frame trên */}
-      <mesh position={[-1, 4.2, -7.9]}>
-        <boxGeometry args={[7, 0.4, 0.4]} />
+      {/* ===== KHUNG CỬA VÒM (tường trước, bên dưới) ===== */}
+      {/* Frame trên cong vòm */}
+      <mesh position={[1, 4.5, -7.9]}>
+        <boxGeometry args={[4.8, 0.4, 0.4]} />
         <meshStandardMaterial color={woodColor} roughness={0.7} />
       </mesh>
       {/* Frame trái */}
-      <mesh position={[-4.2, 2, -7.9]}>
-        <boxGeometry args={[0.4, 4, 0.4]} />
+      <mesh position={[-1.2, 2.2, -7.9]}>
+        <boxGeometry args={[0.4, 4.2, 0.4]} />
         <meshStandardMaterial color={woodColor} roughness={0.7} />
       </mesh>
       {/* Frame phải */}
-      <mesh position={[2.2, 2, -7.9]}>
-        <boxGeometry args={[0.4, 4, 0.4]} />
+      <mesh position={[3.2, 2.2, -7.9]}>
+        <boxGeometry args={[0.4, 4.2, 0.4]} />
         <meshStandardMaterial color={woodColor} roughness={0.7} />
       </mesh>
 
@@ -197,10 +225,10 @@ export const HouseGeometry: React.FC<HouseGeometryProps> = ({ telemetry }) => {
         <GableRoof />
       </group>
 
-      {/* ===== SÀN NỀN (ground plane) ===== */}
-      <mesh position={[0, -0.3, 0]} receiveShadow>
-        <planeGeometry args={[80, 80]} />
-        <meshStandardMaterial color="#c8c8c8" roughness={1} />
+      {/* ===== SÀN NỀN (ground plane) - NẰM NGANG TRÊN MẶT ĐẤT ===== */}
+      <mesh position={[0, -0.05, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[120, 120]} />
+        <meshStandardMaterial color="#cbd5e1" roughness={0.9} />
       </mesh>
     </group>
   );

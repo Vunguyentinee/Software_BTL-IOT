@@ -55,19 +55,30 @@ function StatusOverlay({ telemetry }: { telemetry: ESP32Telemetry }) {
 
 export const HouseDigitalTwin: React.FC<HouseDigitalTwinProps> = ({ telemetry }) => {
   const [showHelp, setShowHelp] = useState(false);
+  const [showLabels, setShowLabels] = useState(true);
 
   return (
     <div className="relative w-full" style={{ height: '480px' }}>
-      {/* Header */}
+      {/* Header controls */}
       <div className="absolute top-3 left-3 z-10 flex items-center gap-2">
-        <span className="bg-slate-900/80 text-white text-xs font-semibold rounded-lg px-3 py-1.5">
+        <span className="bg-slate-900/80 text-white text-xs font-semibold rounded-lg px-3 py-1.5 shadow">
           🏠 Bản sao số — Mô hình nhà IoT
         </span>
         <button
-          onClick={() => setShowHelp(!showHelp)}
-          className="bg-slate-900/70 text-slate-300 hover:text-white text-xs rounded-lg px-2 py-1.5 transition-colors"
+          onClick={() => setShowLabels(!showLabels)}
+          className={`text-xs rounded-lg px-2.5 py-1.5 transition-colors font-medium shadow ${
+            showLabels ? 'bg-indigo-600 text-white hover:bg-indigo-500' : 'bg-slate-900/70 text-slate-300 hover:text-white'
+          }`}
+          title="Bật/Tắt nhãn cảm biến"
         >
-          {showHelp ? '✕' : '?'}
+          🏷️ Nhãn: {showLabels ? 'BẬT' : 'TẮT'}
+        </button>
+        <button
+          onClick={() => setShowHelp(!showHelp)}
+          className="bg-slate-900/70 text-slate-300 hover:text-white text-xs rounded-lg px-2.5 py-1.5 transition-colors shadow"
+          title="Hướng dẫn điều khiển 3D"
+        >
+          {showHelp ? '✕ Đóng' : '? Trợ giúp'}
         </button>
       </div>
 
@@ -109,14 +120,14 @@ export const HouseDigitalTwin: React.FC<HouseDigitalTwinProps> = ({ telemetry })
           <HouseGeometry telemetry={telemetry} />
 
           {/* Sensor động: quạt, cửa servo, labels */}
-          <HouseSensors telemetry={telemetry} />
+          <HouseSensors telemetry={telemetry} showLabels={showLabels} />
 
           {/* Điều khiển xoay/zoom */}
           <OrbitControls
-            target={[0, 10, 0]}
-            minDistance={18}
-            maxDistance={90}
-            maxPolarAngle={Math.PI / 2.1}
+            target={[0, 9.5, 0]}
+            minDistance={15}
+            maxDistance={85}
+            maxPolarAngle={Math.PI / 2.05}
             enablePan={true}
             enableDamping
             dampingFactor={0.08}
