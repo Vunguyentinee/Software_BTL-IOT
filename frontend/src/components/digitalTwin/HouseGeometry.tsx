@@ -160,11 +160,6 @@ export const HouseGeometry: React.FC<HouseGeometryProps> = ({ telemetry }) => {
         <boxGeometry args={[2, 0.2, 2]} />
         <meshStandardMaterial color="#94a3b8" metalness={0.8} roughness={0.2} />
       </mesh>
-      {/* Servo motor xanh dương bên trong cửa (gắn ở mép bản lề X = -3.5) */}
-      <mesh position={[-3.5, 1.5, -6.5]}>
-        <boxGeometry args={[1.5, 2.2, 1.2]} />
-        <meshStandardMaterial color="#0284c7" roughness={0.3} />
-      </mesh>
 
       {/* ===== CỬA SỔ CHỮ THẬP ===== */}
       {/* Tường trước: chính giữa phía trên, ngay dưới chóp mái */}
