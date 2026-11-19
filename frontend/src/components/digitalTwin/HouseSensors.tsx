@@ -47,35 +47,74 @@ function SensorLabel({
   );
 }
 
-/** Cánh quạt quay theo fan_on */
+/** Cánh quạt 2 cánh màu đỏ đối xứng, quay theo fan_on */
 function Fan({ fanOn }: { fanOn: boolean }) {
-  const fanRef = useRef<THREE.Group>(null);
+  const fanBladeRef = useRef<THREE.Group>(null);
 
   useFrame((_, delta) => {
-    if (fanRef.current) {
+    if (fanBladeRef.current) {
       if (fanOn) {
-        fanRef.current.rotation.y += delta * 8; // tốc độ quay
+        // Tốc độ quay nhanh quanh trục Z khi bật
+        fanBladeRef.current.rotation.z += delta * 16;
       } else {
-        // Dừng dần
-        fanRef.current.rotation.y += delta * 0.5 * Math.max(0, 1 - fanRef.current.rotation.y % (Math.PI * 2));
+        // Dừng dần tự nhiên
+        fanBladeRef.current.rotation.z += delta * 0.8 * Math.max(0, 1 - (fanBladeRef.current.rotation.z % (Math.PI * 2)));
       }
     }
   });
 
   return (
-    <group ref={fanRef}>
-      {/* Hub quạt */}
-      <mesh>
-        <cylinderGeometry args={[0.5, 0.5, 0.5, 8]} />
-        <meshStandardMaterial color="#f0f0f0" />
+    <group>
+      {/* 1. Giá treo motor gắn vào xà trần nhà */}
+      <mesh position={[0, 1.4, 0]}>
+        <boxGeometry args={[0.3, 1.2, 0.3]} />
+        <meshStandardMaterial color="#475569" metalness={0.7} roughness={0.3} />
       </mesh>
-      {/* 2 cánh quạt màu đỏ (như model thực) */}
-      {[0, Math.PI].map((angle, i) => (
-        <mesh key={i} rotation={[0, angle, 0]} position={[1.2, 0, 0]}>
-          <boxGeometry args={[2.5, 0.2, 1.0]} />
-          <meshStandardMaterial color="#e53935" roughness={0.4} />
+
+      {/* 2. Củ motor mini DC màu xám bạc kim loại */}
+      <mesh position={[0, 0.5, -0.5]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.5, 0.5, 1.1, 16]} />
+        <meshStandardMaterial color="#e2e8f0" metalness={0.85} roughness={0.2} />
+      </mesh>
+      {/* Dây điện motor (đỏ - đen) luồn lên trần */}
+      <mesh position={[-0.15, 0.9, -0.8]}>
+        <boxGeometry args={[0.06, 0.6, 0.06]} />
+        <meshBasicMaterial color="#dc2626" />
+      </mesh>
+      <mesh position={[0.15, 0.9, -0.8]}>
+        <boxGeometry args={[0.06, 0.6, 0.06]} />
+        <meshBasicMaterial color="#0f172a" />
+      </mesh>
+
+      {/* 3. Cụm 2 cánh quạt đỏ đối xứng 180 độ quay quanh trục Z */}
+      <group position={[0, 0.5, 0.12]} ref={fanBladeRef}>
+        {/* Hub trục tâm quạt màu trắng */}
+        <mesh rotation={[Math.PI / 2, 0, 0]}>
+          <cylinderGeometry args={[0.35, 0.35, 0.25, 16]} />
+          <meshStandardMaterial color="#f8fafc" metalness={0.4} roughness={0.2} />
         </mesh>
-      ))}
+        {/* Chóp nón tròn đỏ ở tâm quạt */}
+        <mesh position={[0, 0, 0.15]}>
+          <sphereGeometry args={[0.3, 12, 10]} />
+          <meshStandardMaterial color="#dc2626" roughness={0.3} />
+        </mesh>
+
+        {/* Cánh 1: Vươn sang bên PHẢI (+X) */}
+        <group rotation={[0, 0, 0.08]}>
+          <mesh position={[1.35, 0, 0]}>
+            <boxGeometry args={[2.3, 0.65, 0.09]} />
+            <meshStandardMaterial color="#dc2626" roughness={0.35} />
+          </mesh>
+        </group>
+
+        {/* Cánh 2: Đối xứng 180 độ, vươn sang bên TRÁI (-X) */}
+        <group rotation={[0, 0, Math.PI + 0.08]}>
+          <mesh position={[1.35, 0, 0]}>
+            <boxGeometry args={[2.3, 0.65, 0.09]} />
+            <meshStandardMaterial color="#dc2626" roughness={0.35} />
+          </mesh>
+        </group>
+      </group>
     </group>
   );
 }
@@ -85,12 +124,12 @@ export const HouseSensors: React.FC<HouseSensorsProps> = ({ telemetry, showLabel
 
   return (
     <group>
-      {/* ===== QUẠT MINI CÁNH ĐỎ (trên sống nóc mái) ===== */}
-      <group position={[3, 20.0, -0.5]}>
+      {/* ===== QUẠT MINI 2 CÁNH ĐỎ LÀM MÁT (Gắn bên trong nội thất nhà) ===== */}
+      <group position={[-2.5, 11.2, 0]}>
         <Fan fanOn={fan_on} />
-        <group position={[0, 2.2, 0]}>
+        <group position={[0, 2.4, 0]}>
           <SensorLabel
-            label="FAN"
+            label="QUẠT LÀM MÁT"
             value={fan_on ? '🔄 ON' : '⏹ OFF'}
             color={fan_on ? '#4ade80' : '#94a3b8'}
             visible={showLabels}
