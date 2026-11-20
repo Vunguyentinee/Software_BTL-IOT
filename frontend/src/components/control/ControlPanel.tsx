@@ -101,7 +101,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchT
       target: 'led1' as DeviceTarget,
       name: 'Đèn Chiếu Sáng (LED1)',
       pin: 'GPIO 12',
-      desc: 'Auto: Bật khi tối VÀ có người (PIR). Manual: Lệnh Web ưu tiên.',
+      desc: 'Auto: Bật khi trời tối (LDR). Manual: Lệnh Web ưu tiên.',
       currentState: led1_on,
       activeText: 'ĐANG SÁNG',
       inactiveText: 'TẮT',

@@ -58,6 +58,7 @@ class Service:
         self._sim: Optional[dict] = None
         self._sim_ts: Optional[float] = None
         self._sim_emitted: Optional[dict] = None
+        self._real_device_last_seen: Optional[float] = None
 
     # ---- helpers -------------------------------------------------------
     def _emit(self, kind: str, data: dict) -> None:
@@ -84,12 +85,21 @@ class Service:
     # ---- ingest --------------------------------------------------------
     def on_telemetry(self, payload) -> bool:
         try:
-            t = Telemetry.model_validate(_to_dict(payload))
+            raw_dict = _to_dict(payload)
+            is_sim = bool(raw_dict.get("is_sim", False))
+            t = Telemetry.model_validate(raw_dict)
         except (ValueError, ValidationError) as e:
             log.warning("invalid telemetry: %s", e)
             return False
         with self._lock:
             now = self.clock()
+            if not is_sim:
+                # Dữ liệu từ phần cứng ESP32 thật
+                self._real_device_last_seen = now
+            elif self._real_device_last_seen is not None and (now - self._real_device_last_seen) < 10.0:
+                # Đang có ESP32 thật gửi dữ liệu: bỏ qua telemetry giả lập để nhường quyền tuyệt đối
+                return True
+
             rec = dict(t.model_dump(), ts=now)
             self._last_seen = now
             self._telemetry = rec

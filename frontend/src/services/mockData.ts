@@ -1,10 +1,10 @@
 import { ESP32Telemetry, DeviceThresholds, ScenarioType } from '../types/telemetry';
 
 export const DEFAULT_THRESHOLDS: DeviceThresholds = {
-  fan_on_temp: 30.0,
-  fan_off_temp: 29.5,
-  heat_alarm_on_temp: 31.0,
-  heat_alarm_off_temp: 30.0,
+  fan_on_temp: 35.0,
+  fan_off_temp: 34.0,
+  heat_alarm_on_temp: 40.0,
+  heat_alarm_off_temp: 37.0,
   smoke_alarm_ppm: 300,
 };
 
@@ -123,19 +123,22 @@ export class MockTelemetryService {
       case 'normal':
         temp = 29.0 + +(Math.random() * 1.5 - 0.75).toFixed(1);
         hum = 65.0 + +(Math.random() * 2 - 1).toFixed(1);
-        smokePpm = Math.max(50, Math.min(120, smokePpm + Math.floor(Math.random() * 10 - 5)));
+        {
+          const currentSmoke = smokePpm ?? 80;
+          smokePpm = Math.max(50, Math.min(120, currentSmoke + Math.floor(Math.random() * 10 - 5)));
+        }
         isDark = false;
         motion = false;
         break;
 
-      case 'cooling_fan': // Nhiệt độ >= 30.0°C
-        temp = 30.5 + +(Math.random() * 0.4 - 0.2).toFixed(1);
+      case 'cooling_fan': // Nhiệt độ >= 35.0°C (Quạt tự bật)
+        temp = 36.2;
         hum = 60.0;
         smokePpm = 90;
         break;
 
-      case 'heat_alarm': // Nhiệt độ >= 31.0°C
-        temp = 32.0 + +(Math.random() * 0.6 - 0.3).toFixed(1);
+      case 'heat_alarm': // Nhiệt độ >= 40.0°C (Cảnh báo nhiệt)
+        temp = 41.5;
         hum = 55.0;
         smokePpm = 110;
         break;
@@ -190,8 +193,8 @@ export class MockTelemetryService {
     let doorCmd = prev.door_command;
 
     if (prev.system_mode === 'auto') {
-      // 1. Chiếu sáng tự động (Firmware mới): Trời tối VÀ PIR có chuyển động -> Bật LED1
-      led1On = isDark && motion;
+      // 1. Chiếu sáng tự động (Firmware thực tế): Trời tối -> Bật LED1 (không phụ thuộc PIR)
+      led1On = isDark;
 
       // 2. Đón người về: PIR 0 -> 1 -> Servo 90° (Mở cửa), LED2 = doorOpen
       //    Đóng cửa: PIR 1 -> 0 -> Servo 0° (Đóng cửa), LED2 = doorOpen
@@ -226,8 +229,8 @@ export class MockTelemetryService {
       }
     }
 
-    const smokeDetected = smokePpm > 150;
-    const smokeAlarm = smokePpm >= this.thresholds.smoke_alarm_ppm;
+    const smokeDetected = smokePpm !== null && smokePpm > 150;
+    const smokeAlarm = smokePpm !== null && smokePpm >= this.thresholds.smoke_alarm_ppm;
 
     this.currentTelemetry = {
       temperature_c: temp,

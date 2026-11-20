@@ -126,7 +126,7 @@ export const HistoryTable: React.FC<HistoryTableProps> = ({
                       {new Date(r.ts * 1000).toLocaleString('vi-VN')}
                     </td>
                     <td className="px-3 py-1.5 text-right font-semibold text-slate-900">
-                      {Number(r.value).toFixed(meta.decimals)}
+                      {r.value !== null && Number.isFinite(Number(r.value)) ? Number(r.value).toFixed(meta.decimals) : '—'}
                     </td>
                   </tr>
                 ))

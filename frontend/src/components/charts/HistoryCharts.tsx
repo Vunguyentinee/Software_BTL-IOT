@@ -87,7 +87,7 @@ export const HistoryCharts: React.FC<HistoryChartsProps> = ({ data, thresholds }
                 ● Nồng độ Khói:
               </span>
               <span className="font-bold text-purple-700 font-mono">
-                {p.smoke_ppm} PPM
+                {p.smoke_ppm !== null && p.smoke_ppm !== undefined ? `${p.smoke_ppm} PPM` : 'Không có (N/A)'}
               </span>
             </div>
             <div className="flex items-center justify-between gap-4">
@@ -106,7 +106,7 @@ export const HistoryCharts: React.FC<HistoryChartsProps> = ({ data, thresholds }
                 {p.door_open ? 'Mở (90°)' : 'Đóng (0°)'}
               </span>
             </div>
-            {p.smoke_ppm >= 300 && (
+            {p.smoke_ppm !== null && p.smoke_ppm >= 300 && (
               <div className="text-[10px] text-rose-700 font-bold bg-rose-50 px-2 py-0.5 rounded border border-rose-200 text-center">
                 🔥 VƯỢT NGƯỠNG NGUY HIỂM 300 PPM
               </div>

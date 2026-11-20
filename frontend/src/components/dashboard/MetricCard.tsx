@@ -96,6 +96,15 @@ export const MetricCardsGrid: React.FC<MetricCardsGridProps> = ({ telemetry }) =
 
   // 3. Phân loại mức khói
   const getSmokeStatus = () => {
+    if (smoke_ppm === null || !telemetry.has_smoke_sensor) {
+      return {
+        valColor: 'text-slate-400',
+        cardBg: 'bg-white border-slate-200 shadow-xs opacity-90',
+        badge: 'Không kết nối',
+        badgeColor: 'bg-slate-100 text-slate-600 border-slate-200',
+        desc: 'Module Gas tháo rời / Chưa kết nối'
+      };
+    }
     if (smoke_alarm || smoke_ppm >= telemetry.thresholds.smoke_alarm_ppm) {
       return { 
         valColor: 'text-rose-600', 
@@ -254,12 +263,21 @@ export const MetricCardsGrid: React.FC<MetricCardsGridProps> = ({ telemetry }) =
           </div>
 
           <div className="my-2">
-            <div className="flex items-baseline gap-1">
-              <span className={`text-3xl sm:text-4xl font-extrabold tracking-tight ${smokeStatus.valColor}`}>
-                {smoke_ppm}
-              </span>
-              <span className="text-lg font-semibold text-slate-400">PPM</span>
-            </div>
+            {smoke_ppm !== null ? (
+              <div className="flex items-baseline gap-1">
+                <span className={`text-3xl sm:text-4xl font-extrabold tracking-tight ${smokeStatus.valColor}`}>
+                  {smoke_ppm}
+                </span>
+                <span className="text-lg font-semibold text-slate-400">PPM</span>
+              </div>
+            ) : (
+              <div className="flex items-baseline gap-2">
+                <span className="text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-400">
+                  N/A
+                </span>
+                <span className="text-xs font-medium text-slate-400">Chưa trang bị</span>
+              </div>
+            )}
             <p className="text-xs text-slate-500 mt-1">{smokeStatus.desc}</p>
           </div>
         </div>
@@ -269,14 +287,24 @@ export const MetricCardsGrid: React.FC<MetricCardsGridProps> = ({ telemetry }) =
           <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
             <div 
               className={`h-full rounded-full transition-all duration-500 ${
-                smoke_ppm >= 300 ? 'bg-rose-500' : smoke_ppm > 150 ? 'bg-amber-500' : 'bg-emerald-500'
+                smoke_ppm === null
+                  ? 'bg-slate-300'
+                  : smoke_ppm >= 300
+                  ? 'bg-rose-500'
+                  : smoke_ppm > 150
+                  ? 'bg-amber-500'
+                  : 'bg-emerald-500'
               }`}
-              style={{ width: `${Math.min(100, (smoke_ppm / 500) * 100)}%` }}
+              style={{ width: smoke_ppm !== null ? `${Math.min(100, (smoke_ppm / 500) * 100)}%` : '0%' }}
             ></div>
           </div>
           <div className="flex justify-between text-[11px] text-slate-500 mt-1 font-medium">
             <span>0 PPM</span>
-            <span className="text-amber-700">Ngưỡng: {telemetry.thresholds?.smoke_alarm_ppm ?? 300} PPM</span>
+            <span className="text-amber-700">
+              {smoke_ppm !== null
+                ? `Ngưỡng: ${telemetry.thresholds?.smoke_alarm_ppm ?? 300} PPM`
+                : 'Module ngắt kết nối'}
+            </span>
             <span>500+</span>
           </div>
         </div>
@@ -337,7 +365,7 @@ export const MetricCardsGrid: React.FC<MetricCardsGridProps> = ({ telemetry }) =
             <div className="flex items-center justify-between text-xs px-1">
               <span className="flex items-center gap-1.5 text-slate-500">
                 <Lightbulb className={`w-3.5 h-3.5 ${led1_on ? 'text-amber-500' : 'text-slate-400'}`} />
-                Đèn tối & có người (LED1):
+                Đèn tối (LED1):
               </span>
               <span className={`font-semibold ${led1_on ? 'text-amber-700' : 'text-slate-500'}`}>
                 {led1_on ? 'BẬT' : 'TẮT'}

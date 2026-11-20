@@ -100,7 +100,7 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                   </span>
                   <Wifi className="w-3.5 h-3.5 ml-0.5 text-emerald-600" />
-                  <span>ESP32 Online</span>
+                  <span>{sim?.active ? 'ESP32 Giả lập' : 'ESP32 Thật Online'}</span>
                 </>
               ) : (
                 <>

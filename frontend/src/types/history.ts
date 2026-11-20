@@ -5,7 +5,7 @@ export interface HistoryDataPoint {
   timeLabel: string;
   temperature_c: number | null;
   humidity_pct: number | null;
-  smoke_ppm: number;
+  smoke_ppm: number | null;
   is_dark: boolean;
   motion_detected: boolean;
   fan_on: boolean;

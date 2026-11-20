@@ -56,7 +56,13 @@ class FakeEsp32:
                           "fan": False, "dht_error": False}
         self.scenario = "normal"
         self.pir_until: Optional[float] = None
+        self.last_real_device_ts: Optional[float] = None
         self._apply_scenario("normal")
+
+    @property
+    def is_real_device_active(self) -> bool:
+        """Đã phát hiện ESP32 thật gửi telemetry trong vòng 10 giây qua."""
+        return self.last_real_device_ts is not None and (self.clock() - self.last_real_device_ts) < 10.0
 
     # ---- kịch bản ------------------------------------------------------
     def _apply_scenario(self, name: str) -> None:
@@ -79,8 +85,14 @@ class FakeEsp32:
         self.publish_sim_state()
 
     def publish_sim_state(self) -> None:
-        body = {"active": True, "scenario": self.scenario,
-                "scenarios": [{"id": k, "label": v[0]} for k, v in SCENARIOS.items()]}
+        real_active = self.is_real_device_active
+        body = {
+            "active": not real_active,
+            "paused": real_active,
+            "reason": "real_device_active" if real_active else None,
+            "scenario": self.scenario,
+            "scenarios": [{"id": k, "label": v[0]} for k, v in SCENARIOS.items()]
+        }
         self.client.publish(self.prefix + "sim/state", json.dumps(body), qos=1, retain=True)
 
     # ---- trạng thái ----------------------------------------------------
@@ -144,6 +156,7 @@ class FakeEsp32:
         self._apply_auto()
         motion = self._motion()
         return {
+            "is_sim": True,
             "temperature_c": round(self.temperature, 1) if self.dht_ok else None,
             "humidity_pct": self.humidity if self.dht_ok else None,
             "dht_ok": self.dht_ok,
@@ -156,7 +169,7 @@ class FakeEsp32:
         }
 
     def publish_telemetry(self) -> None:
-        if self.silent:  # kịch bản "mất kết nối ESP32": im lặng để backend tự phát hiện
+        if self.silent or self.is_real_device_active:  # ngắt nếu mất kết nối hoặc ESP32 thật đang hoạt động
             return
         self.client.publish(self.prefix + "telemetry", json.dumps(self.build_telemetry()), qos=0)
 
@@ -173,6 +186,20 @@ class FakeEsp32:
     def handle_message(self, topic: str, payload: bytes) -> None:
         try:
             data = json.loads(payload)
+            if topic == self.prefix + "telemetry":
+                # Nhận telemetry: nếu không có cờ is_sim, chứng tỏ ESP32 THẬT đang phát!
+                if not data.get("is_sim"):
+                    was_active = not self.is_real_device_active
+                    self.last_real_device_ts = self.clock()
+                    if was_active:
+                        log.info("Phát hiện ESP32 thật hoạt động! Simulator tự động tạm dừng phát và nhường quyền.")
+                        self.publish_sim_state()
+                return
+
+            # Nếu ESP32 thật đang hoạt động, simulator KHÔNG xử lý lệnh hay cấu hình để tránh xung đột
+            if self.is_real_device_active:
+                return
+
             if topic == self.prefix + "cmd":
                 self._on_cmd(data)
             elif topic == self.prefix + "config/set":
@@ -239,6 +266,7 @@ def main() -> None:
     client.will_set(status, "offline", qos=1, retain=True)
 
     def on_connect(c, userdata, flags, rc, props=None):
+        c.subscribe(sim.prefix + "telemetry", qos=0)
         c.subscribe(sim.prefix + "cmd", qos=1)
         c.subscribe(sim.prefix + "config/set", qos=1)
         c.subscribe(sim.prefix + "sim/scenario", qos=1)

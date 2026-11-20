@@ -71,7 +71,7 @@ export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry }) => {
       )}
 
       {/* 2. CẢNH BÁO KHÓI / KHÍ CHÁY */}
-      {smoke_alarm && (
+      {smoke_alarm && smoke_ppm !== null && (
         <div className="relative overflow-hidden rounded-2xl border border-amber-300 bg-amber-50/90 p-4 shadow-sm">
           <div className="flex items-start gap-3">
             <div className="p-2.5 rounded-xl bg-amber-500 text-white shrink-0 mt-0.5 shadow-xs">

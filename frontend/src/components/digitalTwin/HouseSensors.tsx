@@ -166,23 +166,33 @@ export const HouseSensors: React.FC<HouseSensorsProps> = ({ telemetry, showLabel
         {/* Module MQ đen */}
         <mesh>
           <boxGeometry args={[2.8, 2.2, 1.2]} />
-          <meshStandardMaterial color="#0f172a" roughness={0.6} />
+          <meshStandardMaterial color="#0f172a" roughness={0.6} opacity={smoke_ppm !== null ? 1 : 0.6} transparent />
         </mesh>
         {/* Sensor dome tròn kim loại */}
         <mesh position={[0, 1.3, 0]}>
           <cylinderGeometry args={[0.75, 0.75, 0.5, 12]} />
           <meshStandardMaterial
-            color={smoke_alarm ? '#ef4444' : '#64748b'}
-            emissive={smoke_alarm ? '#dc2626' : '#000'}
-            emissiveIntensity={smoke_alarm ? 0.6 : 0}
+            color={smoke_alarm && smoke_ppm !== null ? '#ef4444' : '#64748b'}
+            emissive={smoke_alarm && smoke_ppm !== null ? '#dc2626' : '#000'}
+            emissiveIntensity={smoke_alarm && smoke_ppm !== null ? 0.6 : 0}
             metalness={0.5}
           />
         </mesh>
         <group position={[0, 3.2, 0]} rotation={[0, 0, -0.4]}>
           <SensorLabel
             label="Gas MQ (AO GPIO34)"
-            value={`${smoke_ppm ?? 0} ppm${smoke_alarm ? ' 🚨' : ''}`}
-            color={smoke_alarm ? '#f87171' : '#fbbf24'}
+            value={
+              smoke_ppm !== null
+                ? `${smoke_ppm} ppm${smoke_alarm ? ' 🚨' : ''}`
+                : 'Không kết nối (N/A)'
+            }
+            color={
+              smoke_ppm === null
+                ? '#94a3b8'
+                : smoke_alarm
+                ? '#f87171'
+                : '#fbbf24'
+            }
             visible={showLabels}
           />
         </group>

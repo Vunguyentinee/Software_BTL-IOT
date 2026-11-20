@@ -20,14 +20,16 @@ export function mapBackendTelemetryToFrontend(
   }
 
   // Quy đổi smoke_raw (0 - 4095 ADC) sang PPM hiển thị
-  let smokePpm = 80;
-  if (typeof raw.smoke_raw === 'number') {
+  // Khi ESP32 không lắp module gas, smoke_raw = null -> smokePpm = null, has_smoke_sensor = false
+  let smokePpm: number | null = null;
+  const hasSmokeSensor = typeof raw.smoke_raw === 'number' && Number.isFinite(raw.smoke_raw);
+  if (hasSmokeSensor) {
     // Ước tính PPM từ giá trị analog ADC (0-4095)
-    smokePpm = Math.max(0, Math.round((raw.smoke_raw / 4095) * 800));
+    smokePpm = Math.max(0, Math.round(((raw.smoke_raw as number) / 4095) * 800));
   }
 
   const smokeAlarm = Boolean(raw.smoke_alarm);
-  const smokeDetected = smokeAlarm || (smokePpm >= currentThresholds.smoke_alarm_ppm);
+  const smokeDetected = hasSmokeSensor && (smokeAlarm || (smokePpm !== null && smokePpm >= currentThresholds.smoke_alarm_ppm));
 
   // ts từ backend là epoch seconds (float)
   const timestamp = raw.ts ? Math.round(raw.ts * 1000) : Date.now();
@@ -42,6 +44,7 @@ export function mapBackendTelemetryToFrontend(
     is_dark: raw.is_dark ?? false,
     smoke_raw: raw.smoke_raw ?? null,
     smoke_ppm: smokePpm,
+    has_smoke_sensor: hasSmokeSensor,
     smoke_detected: smokeDetected,
     smoke_alarm: smokeAlarm,
     door_command: raw.door_command ?? 'closed',

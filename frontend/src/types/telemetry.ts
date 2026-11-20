@@ -27,11 +27,12 @@ export interface ESP32Telemetry {
   motion_detected: boolean;     // PIR đang báo chuyển động
   is_dark: boolean;             // Cảm biến quang trở báo trời tối
 
-  // 3. Cảm biến khói (Mở rộng theo yêu cầu đề bài)
+  // 3. Cảm biến khói (Mở rộng theo yêu cầu đề bài; null nếu phần cứng không lắp)
   smoke_raw?: number | null;    // Giá trị ADC thô từ chân AO (GPIO 34) 0..4095
-  smoke_ppm: number;            // Nồng độ khói/khí ga ước tính (PPM)
+  smoke_ppm: number | null;     // Nồng độ khói/khí ga ước tính (PPM); null nếu không có cảm biến
   smoke_detected: boolean;      // Vượt ngưỡng khói
   smoke_alarm: boolean;         // Cảnh báo khói nguy cấp
+  has_smoke_sensor?: boolean;   // Có module cảm biến gas đang kết nối hay không
 
   // 4. Trạng thái cơ cấu chấp hành (Actuators)
   door_command: DoorState;      // Lệnh vị trí cửa ("open" | "closed")
