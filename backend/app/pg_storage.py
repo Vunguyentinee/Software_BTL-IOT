@@ -11,9 +11,10 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+from .reliability import IngestResult, ReliabilityTracker
 from .storage import (HISTORY_METRICS, HistoryStats, iter_history_csv,
                       validate_history_csv_request, validate_history_page_request,
-                      validate_history_stats_request)
+                      validate_history_stats_request, validate_history_time_range)
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +38,10 @@ CREATE TABLE IF NOT EXISTS telemetry (
     smoke_raw INTEGER,
     smoke_alarm BOOLEAN,
     pump_on BOOLEAN,
-    modes JSONB
+    modes JSONB,
+    device_id TEXT,
+    boot_id TEXT,
+    seq BIGINT
 );
 CREATE INDEX IF NOT EXISTS telemetry_ts_idx ON telemetry (ts);
 
@@ -72,6 +76,19 @@ CREATE TABLE IF NOT EXISTS config (
     thresholds JSONB NOT NULL,
     ts TIMESTAMPTZ NOT NULL
 );
+"""
+
+MIGRATION_SQL = """
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS device_id TEXT;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS boot_id TEXT;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS seq BIGINT;
+CREATE UNIQUE INDEX IF NOT EXISTS telemetry_dedup_idx
+ON telemetry (device_id, boot_id, seq)
+WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL;
+CREATE INDEX IF NOT EXISTS telemetry_device_boot_seq_idx
+ON telemetry (device_id, boot_id, seq);
+CREATE INDEX IF NOT EXISTS events_type_ts_idx ON events (type, ts);
+CREATE INDEX IF NOT EXISTS commands_status_idx ON commands (status);
 """
 
 TELEMETRY_COLS = [
@@ -118,6 +135,23 @@ class PostgresStorage:
                 log.info("waiting for database…")
         with self._pool.connection() as conn:
             conn.execute(SCHEMA)
+            conn.execute(MIGRATION_SQL)
+        self._tracker = ReliabilityTracker()
+        self._init_tracker_sessions()
+
+    def _init_tracker_sessions(self) -> None:
+        try:
+            with self._pool.connection() as conn:
+                rows = conn.execute(
+                    "SELECT device_id, boot_id, max(seq) AS max_seq "
+                    "FROM telemetry "
+                    "WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL "
+                    "GROUP BY device_id, boot_id"
+                ).fetchall()
+                for r in rows:
+                    self._tracker.init_session(r["device_id"], r["boot_id"], r["max_seq"])
+        except Exception:
+            log.exception("failed to initialize tracker sessions from db")
 
     def close(self) -> None:
         self._pool.close()
@@ -126,16 +160,42 @@ class PostgresStorage:
         """Xóa toàn bộ dữ liệu (dùng cho test)."""
         with self._pool.connection() as conn:
             conn.execute("TRUNCATE telemetry, events, commands, config RESTART IDENTITY")
+        self._tracker = ReliabilityTracker()
 
     # ---- telemetry -----------------------------------------------------
-    def save_telemetry(self, rec: dict) -> None:
+    def save_telemetry(self, rec: dict) -> bool:
         cols = ", ".join(TELEMETRY_COLS)
         marks = ", ".join(["%s"] * len(TELEMETRY_COLS))
         values = [rec.get(c) for c in TELEMETRY_COLS]
-        with self._pool.connection() as conn:
-            conn.execute(
-                f"INSERT INTO telemetry (ts, {cols}, modes) VALUES (to_timestamp(%s), {marks}, %s)",
-                [rec["ts"], *values, Jsonb(rec.get("modes") or {})])
+        device_id = rec.get("device_id")
+        boot_id = rec.get("boot_id")
+        seq = rec.get("seq")
+        ts = rec["ts"]
+
+        ingest = self._tracker.record_incoming(device_id, boot_id, seq, now=ts)
+        if not ingest.stored:
+            return False
+
+        try:
+            with self._pool.connection() as conn:
+                row = conn.execute(
+                    f"INSERT INTO telemetry (ts, {cols}, modes, device_id, boot_id, seq) "
+                    f"VALUES (to_timestamp(%s), {marks}, %s, %s, %s, %s) "
+                    f"ON CONFLICT (device_id, boot_id, seq) "
+                    f"WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL "
+                    f"DO NOTHING "
+                    f"RETURNING id",
+                    [ts, *values, Jsonb(rec.get("modes") or {}), device_id, boot_id, seq]
+                ).fetchone()
+        except Exception:
+            self._tracker.revert_incoming(device_id, boot_id, seq, ingest)
+            raise
+
+        if row is None and boot_id is not None and seq is not None:
+            self._tracker.record_db_duplicate(device_id, boot_id, seq, was_out_of_order=ingest.is_out_of_order)
+            return False
+
+        return True
 
     def history(self, metric: str, start: Optional[float], end: Optional[float]) -> list[dict]:
         if metric not in HISTORY_METRICS:
@@ -301,3 +361,124 @@ class PostgresStorage:
             row = conn.execute("SELECT config_id, thresholds, extract(epoch from ts)::float8 AS ts "
                                "FROM config WHERE id = 1").fetchone()
             return dict(row) if row else None
+
+    # ---- reliability & connection --------------------------------------
+    def save_connection_event(self, state: str, reason: Optional[str] = None,
+                              ts: Optional[float] = None,
+                              uptime_ms: Optional[int] = None) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO events (ts, type, state, reason, uptime_ms) "
+                "VALUES (to_timestamp(%s), 'connection', %s, %s, %s)",
+                [ts if ts is not None else time.time(), state, reason, uptime_ms]
+            )
+
+    def list_connection_events(self, limit: int = 100, start: Optional[float] = None,
+                               end: Optional[float] = None) -> list[dict]:
+        sql = ("SELECT extract(epoch from ts)::float8 AS ts, state, reason, uptime_ms "
+               "FROM events WHERE type = 'connection'")
+        args: list = []
+        if start is not None:
+            sql += " AND ts >= to_timestamp(%s)"
+            args.append(start)
+        if end is not None:
+            sql += " AND ts <= to_timestamp(%s)"
+            args.append(end)
+        sql += " ORDER BY ts DESC, id DESC LIMIT %s"
+        args.append(limit)
+        with self._pool.connection() as conn:
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+    def list_error_events(self, limit: int = 100, start: Optional[float] = None,
+                          end: Optional[float] = None) -> list[dict]:
+        sql = ("SELECT extract(epoch from ts)::float8 AS ts, type, state, value, "
+               "threshold, reason, uptime_ms FROM events "
+               "WHERE type != 'connection' AND (type ILIKE '%%error%%' OR type IN ('heat_alarm', 'smoke_alarm', 'dht_error'))")
+        args: list = []
+        if start is not None:
+            sql += " AND ts >= to_timestamp(%s)"
+            args.append(start)
+        if end is not None:
+            sql += " AND ts <= to_timestamp(%s)"
+            args.append(end)
+        sql += " ORDER BY ts DESC, id DESC LIMIT %s"
+        args.append(limit)
+        with self._pool.connection() as conn:
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+    def command_stats(self, start: Optional[float] = None,
+                      end: Optional[float] = None) -> dict:
+        validate_history_time_range(start, end)
+        sql = (
+            "SELECT "
+            "count(*)::bigint AS total, "
+            "count(*) FILTER (WHERE status = 'ok')::bigint AS ok, "
+            "count(*) FILTER (WHERE status = 'failed')::bigint AS failed, "
+            "count(*) FILTER (WHERE status = 'timeout')::bigint AS timeout, "
+            "count(*) FILTER (WHERE status = 'pending')::bigint AS pending, "
+            "avg(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS avg_duration_s, "
+            "min(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS min_duration_s, "
+            "max(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS max_duration_s "
+            "FROM commands WHERE 1=1"
+        )
+        args: list = []
+        if start is not None:
+            sql += " AND sent_ts >= to_timestamp(%s)"
+            args.append(start)
+        if end is not None:
+            sql += " AND sent_ts <= to_timestamp(%s)"
+            args.append(end)
+
+        with self._pool.connection() as conn:
+            res = dict(conn.execute(sql, args).fetchone())
+
+        total = res["total"]
+        ok = res["ok"]
+        res["success_rate"] = float(ok / total) if total > 0 else None
+        return res
+
+    def reliability_stats(self, device_id: Optional[str] = None,
+                          start: Optional[float] = None,
+                          end: Optional[float] = None,
+                          now: Optional[float] = None) -> dict:
+        validate_history_time_range(start, end)
+        sql = "SELECT count(*)::bigint AS stored_count FROM telemetry WHERE 1=1"
+        args: list = []
+        if device_id is not None:
+            sql += " AND device_id = %s"
+            args.append(device_id)
+        if start is not None:
+            sql += " AND ts >= to_timestamp(%s)"
+            args.append(start)
+        if end is not None:
+            sql += " AND ts <= to_timestamp(%s)"
+            args.append(end)
+
+        with self._pool.connection() as conn:
+            stored_count = conn.execute(sql, args).fetchone()["stored_count"]
+
+        return self._tracker.get_stats(stored_count=stored_count, device_id=device_id, now=now)
+
+    def verify_telemetry_gaps(self, device_id: str, boot_id: str) -> list[dict]:
+        """Truy vấn kiểm chứng gaps trực tiếp trên dữ liệu PostgreSQL bằng SQL Window Functions."""
+        sql = """
+        WITH seq_diffs AS (
+            SELECT
+                device_id,
+                boot_id,
+                seq,
+                lag(seq) OVER (PARTITION BY device_id, boot_id ORDER BY seq) AS prev_seq
+            FROM telemetry
+            WHERE device_id = %s AND boot_id = %s AND seq IS NOT NULL
+        )
+        SELECT
+            prev_seq + 1 AS gap_start,
+            seq - 1 AS gap_end,
+            (seq - prev_seq - 1)::bigint AS missing_count
+        FROM seq_diffs
+        WHERE prev_seq IS NOT NULL AND seq > prev_seq + 1
+        ORDER BY gap_start;
+        """
+        with self._pool.connection() as conn:
+            rows = conn.execute(sql, [device_id, boot_id]).fetchall()
+            return [dict(r) for r in rows]

@@ -31,8 +31,14 @@ Nguồn ghi: `Service.on_telemetry()` kiểm tra payload bằng `models.Telemetr
 | `smoke_alarm` | `BOOLEAN` | Có | — | Trạng thái cảnh báo khói | Payload telemetry; mặc định model là `False` |
 | `pump_on` | `BOOLEAN` | Có | — | Trạng thái bơm | Payload telemetry; mặc định model là `False` |
 | `modes` | `JSONB` | Có | — | Map chế độ thiết bị; giá trị model là `auto` hoặc `manual` | Payload telemetry; `save_telemetry()` ghi `{}` nếu thiếu/falsy |
+| `device_id` | `TEXT` | Có | Partial Unique Index | Định danh thiết bị phần cứng (ví dụ: `esp32-home`). Nullable để tương thích dữ liệu legacy | Payload `Telemetry` hoặc Settings |
+| `boot_id` | `TEXT` | Có | Partial Unique Index | Định danh phiên khởi động duy nhất của thiết bị (UUID hoặc boot timestamp) | Payload `Telemetry` |
+| `seq` | `BIGINT` | Có | Partial Unique Index | Số thứ tự tuần tự của gói tin trong phiên khởi động | Payload `Telemetry` |
 
-Chỉ mục tường minh: `telemetry_ts_idx ON telemetry (ts)`.
+Chỉ mục tường minh:
+- `telemetry_ts_idx ON telemetry (ts)`: Phục vụ lọc và truy vấn lịch sử thời gian.
+- `telemetry_dedup_idx UNIQUE ON telemetry (device_id, boot_id, seq) WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL`: Ngăn chặn hoàn toàn trùng lặp bản tin ở cấp độ database, đồng thời không gây xung đột với bản tin legacy (`NULL`).
+- `telemetry_device_boot_seq_idx ON telemetry (device_id, boot_id, seq)`: Tối ưu hóa truy vấn sequence gap, session statistics và window functions.
 
 ### Lưu ý riêng về cửa
 
@@ -46,14 +52,16 @@ Nguồn ghi: `Service.on_event()` kiểm tra payload bằng `models.Event`, gắ
 |---|---|---:|---|---|---|
 | `id` | `BIGSERIAL` | Không | PK | Số thứ tự hàng do PostgreSQL cấp | PostgreSQL sequence |
 | `ts` | `TIMESTAMPTZ` | Không | `NOT NULL` | Thời điểm backend nhận event | `Service.clock()` → `to_timestamp()` |
-| `type` | `TEXT` | Không | `NOT NULL` | Loại event; model cho phép `heat_alarm`, `smoke_alarm`, `pump`, `fan`, `door`, `led1`, `dht_error` | Payload event đã qua `Event` |
-| `state` | `TEXT` | Không | `NOT NULL` | Pha event; model cho phép `start` hoặc `end` | Payload event đã qua `Event` |
+| `type` | `TEXT` | Không | `NOT NULL` | Loại event; gồm event từ thiết bị (`heat_alarm`, `smoke_alarm`, `pump`, `fan`, `door`, `led1`, `dht_error`) và event kết nối từ backend (`connection`) | Payload event hoặc `Service._set_online()` |
+| `state` | `TEXT` | Không | `NOT NULL` | Pha event (`start`, `end`) hoặc trạng thái kết nối (`online`, `offline`) | Payload event hoặc `Service._set_online()` |
 | `value` | `DOUBLE PRECISION` | Có | — | Giá trị tùy chọn đi kèm event; source không quy định một đơn vị chung | Payload event |
 | `threshold` | `DOUBLE PRECISION` | Có | — | Ngưỡng tùy chọn đi kèm event; source không quy định một đơn vị chung | Payload event |
-| `reason` | `TEXT` | Có | — | Lý do tùy chọn | Payload event |
+| `reason` | `TEXT` | Có | — | Lý do tùy chọn hoặc nguyên nhân thay đổi kết nối: `telemetry` (gói telemetry kích hoạt online), `status` (broker báo qua LWT hoặc topic status), `timeout` (quá thời hạn không nhận heartbeat), `mqtt_connect` (backend kết nối lại MQTT) | Payload event hoặc `Service._set_online()` |
 | `uptime_ms` | `BIGINT` | Có | — | Uptime thiết bị tại event; model yêu cầu trường này | Payload event |
 
-Chỉ mục tường minh: `events_ts_idx ON events (ts)`.
+Chỉ mục tường minh:
+- `events_ts_idx ON events (ts)`: Sắp xếp và lọc sự kiện theo thời gian.
+- `events_type_ts_idx ON events (type, ts)`: Tối ưu hóa truy vấn lọc sự kiện kết nối (`type = 'connection'`) và sự kiện lỗi (`list_connection_events`, `list_error_events`).
 
 DDL không có constraint kiểm tra miền `type`/`state` và không có khóa chống trùng. Miền giá trị nêu trên được bảo vệ ở đường ghi qua `Service`, không phải bởi PostgreSQL.
 
@@ -73,7 +81,9 @@ Nguồn ghi: `Service.send_command()` tạo UUID dạng hex, ghi trạng thái `
 | `detail` | `TEXT` | Có | — | Chi tiết ACK lỗi hoặc lý do timeout | ACK hoặc Service |
 | `ts` | `TIMESTAMPTZ` | Không | `NOT NULL` | Timestamp bản ghi lệnh lúc tạo; mặc định theo `sent_ts` nếu Storage không nhận `ts` | `Service.send_command()` / `save_command()` |
 
-Chỉ mục tường minh: `commands_sent_idx ON commands (sent_ts)`.
+Chỉ mục tường minh:
+- `commands_sent_idx ON commands (sent_ts)`: Sắp xếp lệnh gửi mới nhất trước.
+- `commands_status_idx ON commands (status)`: Tối ưu hóa thống kê trạng thái lệnh (`command_stats`).
 
 `save_command()` dùng `ON CONFLICT (cmd_id)` nhưng khi xung đột chỉ cập nhật `status`, `detail`, `ack_ts`; các trường nhận diện lệnh ban đầu không bị thay thế.
 
@@ -91,7 +101,7 @@ Nguồn ghi: `Service.set_config()` nhận `models.Thresholds`, tạo `config_id
 
 | Cột | Kiểu PostgreSQL | Nullable | PK/constraint | Ý nghĩa theo source | Nguồn dữ liệu |
 |---|---|---:|---|---|---|
-| `id` | `INTEGER` | Không | PK, `CHECK (id = 1)` | Khóa cố định để bảng chỉ giữ cấu hình hiện hành | Hằng `1` trong `save_config()` |
+| `id` | `INTEGER` | Không | PK, `CHECK id = 1` | Khóa cố định để bảng chỉ giữ cấu hình hiện hành | Hằng `1` trong `save_config()` |
 | `config_id` | `TEXT` | Không | `NOT NULL` | ID của lần đặt cấu hình gần nhất | `uuid.uuid4().hex` trong `Service.set_config()` |
 | `thresholds` | `JSONB` | Không | `NOT NULL` | Object chứa bộ ngưỡng hiện hành | `Thresholds.model_dump()` |
 | `ts` | `TIMESTAMPTZ` | Không | `NOT NULL` | Thời điểm cấu hình được lưu | `Service.clock()`; Storage fallback `time.time()` |
@@ -102,4 +112,37 @@ Object `thresholds` hiện có sáu khóa theo `models.Thresholds`: `fan_on`, `f
 
 Trạng thái runtime của việc áp dụng config (`pending`, `applied`, `rejected`, `timeout`) và `detail` nằm trong bộ nhớ `Service._config`, không có cột tương ứng trong bảng `config`. Sau restart, `Service._initial_config()` đọc `config_id` và `thresholds`, rồi dựng trạng thái `pending` để publish lại khi MQTT kết nối.
 
-Trạng thái MQTT online/offline cũng không nằm trong bốn bảng. `Service` chỉ giữ `_online`, `_last_seen`, `_offline_since` trong bộ nhớ và phát thay đổi qua WebSocket.
+Trạng thái MQTT online/offline: hiện được lưu bền vững vào bảng `events` qua `save_connection_event()` (`type = 'connection'`), đồng thời `Service` giữ `_online`, `_last_seen`, `_offline_since` trong bộ nhớ và phát thay đổi qua WebSocket.
+
+## 6. Từ điển các chỉ số thống kê & Reliability (Storage API)
+
+### 6.1. Thống kê lệnh điều khiển (`command_stats`)
+
+| Trường | Kiểu | Mô tả |
+|---|---|---|
+| `total` | `int` | Tổng số lệnh được gửi trong khoảng thời gian truy vấn |
+| `ok` | `int` | Số lệnh thực thi thành công (nhận ACK `result = 'ok'`) |
+| `failed` | `int` | Số lệnh thiết bị báo thất bại (nhận ACK `result = 'failed'`) |
+| `timeout` | `int` | Số lệnh không nhận được ACK trong thời hạn quy định (mặc định 5.0s) |
+| `pending` | `int` | Số lệnh đang chờ phản hồi từ thiết bị |
+| `success_rate` | `float` hoặc `None` | Tỷ lệ thành công $N_{ok} / N_{total}$; `None` nếu $total = 0$ |
+| `avg_duration_s` | `float` hoặc `None` | Thời gian phản hồi trung bình (giây) tính bằng $\text{ack\_ts} - \text{sent\_ts}$ |
+| `min_duration_s` | `float` hoặc `None` | Thời gian phản hồi nhanh nhất (giây) |
+| `max_duration_s` | `float` hoặc `None` | Thời gian phản hồi chậm nhất (giây) |
+
+### 6.2. Thống kê độ tin cậy Telemetry (`reliability_stats`)
+
+| Trường | Kiểu | Mô tả |
+|---|---|---|
+| `received_count` | `int` | Tổng số bản tin backend đã nhận từ MQTT |
+| `stored_count` | `int` | Tổng số bản tin hợp lệ được lưu bền trong PostgreSQL |
+| `duplicate_count` | `int` | Số bản tin trùng lặp phát hiện được theo bộ ba `(device_id, boot_id, seq)` |
+| `out_of_order_count` | `int` | Số bản tin đến muộn / lệch thứ tự ($seq < max\_seq$) trong cùng phiên boot |
+| `gaps_count` | `int` | Tổng số lần phát hiện đứt đoạn chuỗi tuần tự ($seq > max\_seq + 1$) tích lũy |
+| `missing_packets_pending` | `int` | Số sequence gaps đang khuyết trong cửa sổ quan sát ($T_{\text{late}} = 10.0s$) |
+| `unresolved_gaps_beyond_window` | `int` | Số sequence gaps chưa được giải quyết đã vượt quá cửa sổ trễ quan sát |
+| `missing_packets_confirmed`| `int` | Alias tương thích ngược của `unresolved_gaps_beyond_window` |
+| `boot_count` | `int` | Số lượng phiên khởi động khác nhau được ghi nhận |
+| `late_window_s` | `float` | Độ dài cửa sổ thời gian chờ bản tin đến muộn (mặc định 10.0 giây) |
+| `delivery_rate` | `None` | Tỷ lệ phân phối; luôn trả `None` do chưa có bộ đếm phát từ ESP32 firmware |
+| `delivery_rate_note` | `str` | Chú thích rõ ràng nguyên nhân khoa học không công bố tỷ lệ phỏng đoán |

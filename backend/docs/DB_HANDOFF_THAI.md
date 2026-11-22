@@ -119,25 +119,34 @@ Lưu ý: method cũ `history()` được giữ nguyên để tương thích. Val
 
 ## 5. Phối hợp Vũ – tích hợp backend/API
 
-### API hiện có
+### 5.1. Các Storage method mới sẵn sàng tích hợp
 
-Source hiện có:
+Tầng Storage (`InMemoryStorage` và `PostgresStorage`) đã hoàn thiện các method mở rộng phục vụ độ tin cậy và báo cáo khoa học:
 
-- `GET /api/history?metric=&from=&to=` → `service.storage.history()`;
-- `GET /api/events`, `GET /api/commands`, `GET /api/commands/{cmd_id}`;
-- API command/config/state và WebSocket `/ws`.
+| Method mới | Tham số | Kết quả trả về | Mục đích |
+|---|---|---|---|
+| `reliability_stats()` | `device_id`, `start`, `end`, `now` | JSON dict độ tin cậy | Số bản tin nhận, lưu, duplicate, out-of-order, gaps, pending gaps, unresolved gaps beyond window |
+| `command_stats()` | `start`, `end` | JSON dict thống kê lệnh | Tổng lệnh, ok, failed, timeout, pending, success_rate, min/avg/max latency |
+| `list_connection_events()` | `limit`, `start`, `end` | `list[dict]` | Lịch sử các lần online / offline của thiết bị lưu từ bảng `events` |
+| `list_error_events()` | `limit`, `start`, `end` | `list[dict]` | Lịch sử sự kiện lỗi (`dht_error`) và cảnh báo cháy (`heat_alarm`, `smoke_alarm`) |
+| `verify_telemetry_gaps()` | `device_id`, `boot_id` (chỉ trên Postgres) | `list[dict]` | Dùng Window function `lag()` kiểm chứng độc lập khoảng gap sequence |
 
-Không có endpoint statistics, paginated history hoặc CSV. Các endpoint dưới đây chỉ là đề xuất contract để Vũ thống nhất, chưa phải chức năng đã tích hợp:
+### 5.2. Đề xuất REST endpoint để Vũ cân nhắc expose
 
-| Đề xuất | Storage method | Kết quả |
-|---|---|---|
-| `GET /api/history/stats?metric=&from=&to=` | `history_stats()` | JSON `{count,avg,min,max}` |
-| `GET /api/history/page?metric=&from=&to=&limit=&offset=` | `history_page()` | JSON `[{ts,value}]` |
-| `GET /api/history.csv?metric=&from=&to=&batch_size=` | `history_csv()` | Stream `text/csv` |
+| Đề xuất endpoint | Method gọi | Gợi ý query params | Kết quả |
+|---|---|---|---|
+| `GET /api/history/reliability` | `storage.reliability_stats()` | `device_id`, `from`, `to` | `{received_count, stored_count, duplicate_count, out_of_order_count, gaps_count, missing_packets_pending, missing_packets_confirmed, boot_count, delivery_rate}` |
+| `GET /api/history/commands/stats` | `storage.command_stats()` | `from`, `to` | `{total, ok, failed, timeout, pending, success_rate, avg_duration_s, min_duration_s, max_duration_s}` |
+| `GET /api/history/connections` | `storage.list_connection_events()` | `limit`, `from`, `to` | `[{ts, state, reason, uptime_ms}]` |
+| `GET /api/history/errors` | `storage.list_error_events()` | `limit`, `from`, `to` | `[{ts, type, state, value, threshold, reason, uptime_ms}]` |
 
-Tên endpoint cuối cùng cần Vũ/Đức thống nhất; không nên coi bảng trên là API đã chốt.
+### 5.3. Bảo vệ trạng thái thời gian thực (`Service._telemetry`)
 
-### `StreamingResponse` và thời điểm xử lý lỗi
+Khi tích hợp telemetry, `Service.on_telemetry()` đã được cấu hình cơ chế bảo vệ:
+- Nếu bản tin bị phát hiện là duplicate: bỏ qua không ghi đè trạng thái và không phát broadcast lặp.
+- Nếu bản tin là đến muộn (out-of-order, $seq < max\_seq$): bản tin vẫn được ghi vào database lịch sử, nhưng `Service._telemetry` giữ nguyên trạng thái mới nhất, tránh làm sai lệch giao diện web.
+
+### 5.4. `StreamingResponse` và thời điểm xử lý lỗi
 
 `history_csv()` hiện validation và chốt high-water trước khi trả iterator, nên Vũ cần gọi method trong `try/except` **trước** khi tạo/trả `StreamingResponse`:
 
@@ -157,62 +166,85 @@ return StreamingResponse(
 )
 ```
 
-Không bọc lời gọi `history_csv()` vào một generator khác theo cách trì hoãn việc gọi đến lúc response đã bắt đầu, vì khi đó `ValueError` validation có thể xuất hiện sau khi HTTP headers đã gửi. `_parse_time()` hiện có thể chuyển chuỗi `nan`/`inf` thành float; endpoint mới phải để Storage từ chối và chuyển `ValueError` thành HTTP 422.
+### 5.5. Giải thích các cập nhật trong `service.py` cho Vũ review
 
-Lỗi database phát sinh trong các batch sau vẫn có thể xảy ra sau khi streaming đã bắt đầu; HTTP lúc đó không thể đổi sang response JSON 5xx/422 thông thường. Cần log lỗi, theo dõi download thất bại và để client phát hiện stream bị ngắt.
+Nhằm tăng cường độ ổn định cho hệ thống và đáp ứng yêu cầu Final Review, module Database & History đã đề xuất và triển khai các thay đổi tối thiểu, có kiểm thử bảo vệ trong `backend/app/service.py`:
+1. **Bảo vệ luồng Realtime khi Database gặp sự cố tạm thời**:
+   - Trong `on_telemetry()`: Bọc lệnh gọi `self.storage.save_telemetry(rec)` trong `try ... except Exception`.
+   - Nếu lưu vào DB thất bại (ví dụ PostgreSQL rớt kết nối mạng hoặc timeout): log lỗi bằng `log.error`, nhưng **không để ngoại lệ làm sập luồng nhận MQTT**. Trạng thái realtime `_telemetry`, cập nhật nhịp tim `_last_seen`, `_set_online(True)` và broadcast WebSocket vẫn hoạt động bình thường, giúp giao diện giám sát nhà thông minh không bị gián đoạn.
+   - Tuyệt đối không coi failed persistence là `stored = True` (gán `stored = None`).
+   - Nếu bản tin là duplicate (`stored is False`): bỏ qua một cách idempotent, không ghi đè và không re-broadcast.
+   - Vẫn bảo toàn 100% cơ chế ưu tiên ESP32 thật so với simulator trong commit `da4cb44`.
+2. **Phân biệt lý do ngoại tuyến tường minh trong `_set_online`**:
+   - `_set_online(online, reason=None)`:
+     + Khi broker phát LWT hoặc tin nhắn topic status "offline": truyền tường minh `reason="status"`.
+     + Khi Service `tick()` phát hiện quá thời hạn heartbeat: truyền tường minh `reason="timeout"`.
+     + Giúp bảng sự kiện `events` lưu chính xác nguyên nhân mất kết nối phục vụ đối soát.
 
-## 6. Phối hợp Đức – frontend
+## 6. Phối hợp Hiệu – Firmware ESP32
+
+### 6.1. Hợp đồng mở rộng Telemetry (Tương thích ngược 100%)
+
+Để hệ thống đo đạc được độ tin cậy, Hiệu bổ sung 3 trường vào payload JSON gửi lên topic `home/esp32-home/telemetry`:
+
+```json
+{
+  "device_id": "esp32-home",
+  "boot_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "seq": 0,
+  "temperature_c": 36.0,
+  "humidity_pct": 70.0,
+  "dht_ok": true,
+  "pir_ready": true,
+  "motion_detected": true,
+  "is_dark": true,
+  "door_command": "closed",
+  "fan_on": false,
+  "led1_on": false,
+  "led2_on": false,
+  "led3_on": false,
+  "heat_alarm": false,
+  "uptime_ms": 120000,
+  "smoke_raw": 300,
+  "smoke_alarm": false,
+  "pump_on": false,
+  "modes": {"fan": "auto"}
+}
+```
+
+### 6.2. Quy ước kỹ thuật cho Firmware
+
+1. **`device_id`**: Chuỗi cố định theo cấu hình thiết bị (ví dụ `"esp32-home"`).
+2. **`boot_id`**: Chuỗi UUID ngẫu nhiên (hoặc chuỗi timestamp epoch lúc ESP32 khởi động). **Mỗi lần ESP32 reset/reboot phải sinh một `boot_id` mới**.
+3. **`seq`**: Bộ đếm gói tin kiểu số nguyên không âm (`0, 1, 2, ...`), tăng 1 đơn vị sau mỗi lần publish telemetry. **Reset về 0 khi reboot**.
+4. **Tính tương thích ngược**: Nếu firmware cũ chưa kịp cập nhật, các bản tin không có `device_id`, `boot_id`, `seq` vẫn được backend lưu trữ bình thường, không gây lỗi hệ thống.
+5. **Bộ đếm phát ($N_{\text{sent}}$)**: Nếu Hiệu có thể bổ sung thêm trường `tx_count` (tổng số bản tin telemetry đã phát từ lúc khởi động), backend sẽ tính được tỷ lệ phân phối thực tế $delivery\_rate = N_{\text{received}} / tx\_count$.
+
+## 7. Phối hợp Đức – frontend
 
 Các điểm cần chốt trước khi nối UI:
 
 - Biểu đồ: chọn metric trong allowlist; `ts` là Unix giây; `value` có thể là số hoặc boolean tùy metric; hàng `NULL` không xuất hiện.
 - Thống kê: UI phải hiển thị trạng thái rỗng khi `count = 0` và `avg/min/max = null`, không hiển thị 0 giả.
-- Phân trang: `limit` tối đa 1000; OFFSET không phải cursor ổn định tuyệt đối nếu dữ liệu mới được chèn giữa các request. UI nên tải theo trang và có hành vi refresh rõ ràng.
-- CSV: header chính xác `ts,value`, UTF-8, CRLF; boolean là `True`/`False`. Frontend nên dùng filename/content type từ response và không parse toàn bộ file vào RAM chỉ để tải xuống.
-- Phải thống nhất tên endpoint/query và cách hiển thị timezone. Dữ liệu truyền là epoch giây; việc đổi sang giờ địa phương thuộc tầng hiển thị.
-- Với cửa, không mô tả command/ACK hoặc `door_command` là cảm biến xác nhận vị trí vật lý vì source không có trường xác nhận đó.
+- Thống kê Reliability: UI có thể hiển thị tỷ lệ lưu trữ, số bản tin trùng phát hiện được, số lần mất gói đã xác nhận (`missing_packets_confirmed`) và số gói đang chờ trễ (`missing_packets_pending`).
+- Lịch sử kết nối: Hiển thị bảng online/offline với thời điểm `ts` và nguyên nhân `reason`.
+- Thống kê lệnh: Hiển thị biểu đồ tỷ lệ lệnh thành công và độ trễ phản hồi ACK trung bình/min/max.
 
-## 7. Giới hạn và rủi ro còn lại
+## 8. Các vấn đề cần nhóm xác nhận (Pending Team Alignments)
 
-| Chủ đề | Hiện trạng/giới hạn |
-|---|---|
-| Telemetry QoS 0 | Telemetry có thể mất khi broker/backend không nhận được bản tin; đây là mất trước khi commit, khác với mất dữ liệu PostgreSQL đã commit |
-| Event dedup | Event dùng QoS 1 nhưng schema không có event ID/idempotency key; bản tin phát lại có thể tạo hàng trùng |
-| Online/offline | Trạng thái connection nằm trong bộ nhớ Service và WebSocket, không có bảng persistence; restart backend dựng lại trạng thái ban đầu |
-| Command ACK | Không có hàng ACK riêng; ACK hợp lệ cập nhật `status`, `detail`, `ack_ts` của hàng `commands`. ACK lặp, không rõ ID hoặc đến sau trạng thái cuối bị bỏ qua |
-| CSV MVCC snapshot | High-water ID loại insert ID mới, nhưng các batch là transaction autocommit riêng; không phải snapshot MVCC duy nhất cho toàn phiên |
-| Config ACK runtime | Bảng chỉ lưu `config_id`, thresholds và `ts`; trạng thái `applied/rejected/timeout` cùng detail không được lưu bền. Sau restart cấu hình được coi là `pending` |
-| Index | Chỉ có `telemetry(ts)`, `events(ts)`, `commands(sent_ts)`; chưa có benchmark cho keyset `(ts,id)` hoặc truy vấn khối lượng lớn |
-| Retention | Chưa có TTL, archive, partition hoặc giới hạn dung lượng PostgreSQL trong source |
-| OFFSET | Offset lớn tốn chi phí và có thể lặp/bỏ vị trí giữa các request nếu dữ liệu thay đổi; keyset pagination là hướng mở rộng, chưa triển khai cho API trang |
-| Backend security | `api.py` cho CORS `*`; source chưa có authentication/authorization, rate limiting hay giới hạn export theo người dùng |
-| Cửa vật lý | Không có sensor-confirmed door position trong schema/model |
+1. **Xác nhận với Hiệu**: Firmware có thể sinh UUID cho `boot_id` và đếm `seq` bắt đầu từ 0 được không? Có thể bổ sung thêm `tx_count` để tính delivery rate chính xác không?
+2. **Xác nhận với Vũ & Đức**: Thống nhất đường dẫn URL và query parameters cho các endpoint reliability, command stats và connection history.
+3. **Xác nhận về cửa vật lý**: Giữ nguyên nguyên tắc `door_command` và command ACK chỉ phản ánh tín hiệu gửi tới servo, không tự ý suy diễn thành công tắc vị trí cửa vật lý.
 
-## 8. Chạy test PostgreSQL an toàn
+## 9. Chạy test PostgreSQL an toàn
 
-Integration test chỉ được phép trỏ tới database test `smarthome_test` trên cổng `55432`. Fixture trong `backend/tests/test_postgres_storage.py` có guard kiểm tra cả port và tên database, sau đó mới dùng `reset()` cho test isolation.
+Integration test chỉ được phép trỏ tới database test `smarthome_test` trên cổng `55432`. Fixture trong `backend/tests/test_postgres_storage.py` và `test_reliability.py` có guard kiểm tra cả port và tên database, sau đó mới dùng `reset()` cho test isolation.
 
-Ví dụ PowerShell từ thư mục repository:
+Lệnh chạy kiểm thử trên PowerShell từ thư mục backend:
 
 ```powershell
-$env:BTL_TEST_DATABASE_URL = 'postgresql://smarthome:smarthome@localhost:55432/smarthome_test'
-python -m pytest backend/tests --basetemp='D:\IOT-BTL\_pytest_thai_temp'
+$env:BTL_TEST_DATABASE_URL = 'postgresql://postgres:test@127.0.0.1:55432/smarthome_test'
+python -m pytest --basetemp='D:\IOT-BTL\_pytest_thai_temp'
 ```
 
-Trước khi chạy, kiểm tra URL không trỏ đến cổng demo `5432` và database không phải `smarthome`. Không chạy integration test bằng credential/URL production hoặc demo. Sau khi chạy có thể xóa biến môi trường khỏi phiên shell:
-
-```powershell
-Remove-Item Env:BTL_TEST_DATABASE_URL
-```
-
-## 9. Điểm vào source để tiếp tục tích hợp
-
-| Thành phần | File/class/method |
-|---|---|
-| Contract và validation | `backend/app/storage.py`: `Storage`, `HistoryStats`, `validate_history_*` |
-| In-memory reference | `backend/app/storage.py`: `InMemoryStorage.history_stats/history_page/history_csv` |
-| PostgreSQL | `backend/app/pg_storage.py`: `PostgresStorage.history_stats/history_page/history_csv`, `_history_csv_rows` |
-| API hiện hành | `backend/app/api.py`: `create_app()`, route `history()` và `_parse_time()` |
-| Service | `backend/app/service.py`: `Service` |
-| Model/metric API | `backend/app/models.py`: `Telemetry`, `Thresholds`; `backend/app/api.py`: `METRICS` |
-| Integration test | `backend/tests/test_postgres_storage.py` |
+Kết quả thực tế đạt: **226 passed** (100% PASS) trong 4.37 giây.

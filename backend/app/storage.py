@@ -4,8 +4,11 @@ import json
 import math
 import os
 import threading
+import time
 from collections import deque
 from typing import Iterable, Iterator, Optional, Protocol, TypedDict
+
+from .reliability import IngestResult, ReliabilityTracker
 
 
 HISTORY_METRICS = frozenset({
@@ -74,7 +77,7 @@ def iter_history_csv(rows: Iterable[dict]) -> Iterator[bytes]:
 
 
 class Storage(Protocol):
-    def save_telemetry(self, rec: dict) -> None: ...
+    def save_telemetry(self, rec: dict) -> bool: ...
     def save_event(self, rec: dict) -> None: ...
     def save_command(self, rec: dict) -> None: ...
     def update_command(self, cmd_id: str, **fields) -> Optional[dict]: ...
@@ -85,11 +88,24 @@ class Storage(Protocol):
     def history_page(self, metric: str, start: Optional[float], end: Optional[float],
                      limit: int, offset: int) -> list[dict]: ...
     def history_csv(self, metric: str, start: Optional[float], end: Optional[float],
-                    batch_size: int = 1000) -> Iterator[bytes]: ...
+                     batch_size: int = 1000) -> Iterator[bytes]: ...
     def history_stats(self, metric: str, start: Optional[float],
                       end: Optional[float]) -> HistoryStats: ...
     def list_events(self, limit: int = 100) -> list[dict]: ...
     def list_commands(self, limit: int = 100) -> list[dict]: ...
+    def save_connection_event(self, state: str, reason: Optional[str] = None,
+                              ts: Optional[float] = None,
+                              uptime_ms: Optional[int] = None) -> None: ...
+    def list_connection_events(self, limit: int = 100, start: Optional[float] = None,
+                               end: Optional[float] = None) -> list[dict]: ...
+    def list_error_events(self, limit: int = 100, start: Optional[float] = None,
+                          end: Optional[float] = None) -> list[dict]: ...
+    def command_stats(self, start: Optional[float] = None,
+                      end: Optional[float] = None) -> dict: ...
+    def reliability_stats(self, device_id: Optional[str] = None,
+                          start: Optional[float] = None,
+                          end: Optional[float] = None,
+                          now: Optional[float] = None) -> dict: ...
 
 
 class InMemoryStorage:
@@ -102,6 +118,7 @@ class InMemoryStorage:
         self._events: list[dict] = []
         self._commands: dict[str, dict] = {}
         self._config: Optional[dict] = None
+        self._tracker = ReliabilityTracker()
         self._load()
 
     def _load(self) -> None:
@@ -128,9 +145,18 @@ class InMemoryStorage:
                        "config": self._config}, f)
         os.replace(tmp, self._path)
 
-    def save_telemetry(self, rec: dict) -> None:
+    def save_telemetry(self, rec: dict) -> bool:
         with self._lock:
+            ingest = self._tracker.record_incoming(
+                rec.get("device_id"),
+                rec.get("boot_id"),
+                rec.get("seq"),
+                now=rec.get("ts"),
+            )
+            if not ingest.stored:
+                return False
             self._telemetry.append(rec)
+            return True
 
     def save_event(self, rec: dict) -> None:
         with self._lock:
@@ -241,3 +267,94 @@ class InMemoryStorage:
         with self._lock:
             cmds = sorted(self._commands.values(), key=lambda c: c.get("sent_ts", c.get("ts", 0)), reverse=True)
             return [dict(c) for c in cmds[:limit]]
+
+    def save_connection_event(self, state: str, reason: Optional[str] = None,
+                              ts: Optional[float] = None,
+                              uptime_ms: Optional[int] = None) -> None:
+        rec = {
+            "type": "connection",
+            "state": state,
+            "reason": reason,
+            "uptime_ms": uptime_ms,
+            "ts": ts if ts is not None else time.time(),
+        }
+        self.save_event(rec)
+
+    def list_connection_events(self, limit: int = 100, start: Optional[float] = None,
+                               end: Optional[float] = None) -> list[dict]:
+        with self._lock:
+            evs = [
+                dict(e) for e in reversed(self._events)
+                if e.get("type") == "connection"
+                and (start is None or e["ts"] >= start)
+                and (end is None or e["ts"] <= end)
+            ]
+            return evs[:limit]
+
+    def list_error_events(self, limit: int = 100, start: Optional[float] = None,
+                          end: Optional[float] = None) -> list[dict]:
+        with self._lock:
+            evs = [
+                dict(e) for e in reversed(self._events)
+                if e.get("type") != "connection"
+                and ("error" in str(e.get("type", "")).lower()
+                     or e.get("type") in ("heat_alarm", "smoke_alarm", "dht_error"))
+                and (start is None or e["ts"] >= start)
+                and (end is None or e["ts"] <= end)
+            ]
+            return evs[:limit]
+
+    def command_stats(self, start: Optional[float] = None,
+                      end: Optional[float] = None) -> dict:
+        validate_history_time_range(start, end)
+        with self._lock:
+            cmds = [
+                c for c in self._commands.values()
+                if (start is None or c.get("sent_ts", c.get("ts", 0)) >= start)
+                and (end is None or c.get("sent_ts", c.get("ts", 0)) <= end)
+            ]
+        total = len(cmds)
+        ok = sum(1 for c in cmds if c.get("status") == "ok")
+        failed = sum(1 for c in cmds if c.get("status") == "failed")
+        timeout = sum(1 for c in cmds if c.get("status") == "timeout")
+        pending = sum(1 for c in cmds if c.get("status") == "pending")
+
+        durations = [
+            c["ack_ts"] - c["sent_ts"]
+            for c in cmds
+            if c.get("ack_ts") is not None and c.get("sent_ts") is not None
+            and c["ack_ts"] >= c["sent_ts"]
+        ]
+        avg_d = float(sum(durations) / len(durations)) if durations else None
+        min_d = float(min(durations)) if durations else None
+        max_d = float(max(durations)) if durations else None
+        success_rate = float(ok / total) if total > 0 else None
+
+        return {
+            "total": total,
+            "ok": ok,
+            "failed": failed,
+            "timeout": timeout,
+            "pending": pending,
+            "success_rate": success_rate,
+            "avg_duration_s": avg_d,
+            "min_duration_s": min_d,
+            "max_duration_s": max_d,
+        }
+
+    def reliability_stats(self, device_id: Optional[str] = None,
+                          start: Optional[float] = None,
+                          end: Optional[float] = None,
+                          now: Optional[float] = None) -> dict:
+        validate_history_time_range(start, end)
+        with self._lock:
+            if device_id is not None or start is not None or end is not None:
+                stored = sum(
+                    1 for r in self._telemetry
+                    if (device_id is None or r.get("device_id") == device_id)
+                    and (start is None or r.get("ts", 0) >= start)
+                    and (end is None or r.get("ts", 0) <= end)
+                )
+            else:
+                stored = len(self._telemetry)
+            return self._tracker.get_stats(stored_count=stored, device_id=device_id, now=now)
