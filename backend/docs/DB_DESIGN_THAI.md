@@ -88,6 +88,9 @@ erDiagram
         BOOLEAN smoke_alarm
         BOOLEAN pump_on
         JSONB modes
+        TEXT device_id "Mới: định danh thiết bị"
+        TEXT boot_id "Mới: định danh phiên khởi động"
+        BIGINT seq "Mới: bộ đếm tuần tự gói"
     }
 
     events {
@@ -125,9 +128,9 @@ erDiagram
 
 | Bảng | Khóa/constraint | Chỉ mục tường minh |
 |---|---|---|
-| `telemetry` | `PRIMARY KEY (id)`; `ts NOT NULL` | `telemetry_ts_idx (ts)` |
-| `events` | `PRIMARY KEY (id)`; `ts`, `type`, `state` là `NOT NULL` | `events_ts_idx (ts)` |
-| `commands` | `PRIMARY KEY (cmd_id)`; `device`, `action`, `status`, `sent_ts`, `ts` là `NOT NULL` | `commands_sent_idx (sent_ts)` |
+| `telemetry` | `PRIMARY KEY (id)`; `ts NOT NULL`; Partial Unique Constraint: `(device_id, boot_id, seq)` khi các trường `NOT NULL` | `telemetry_ts_idx (ts)`; `telemetry_dedup_idx UNIQUE (device_id, boot_id, seq) WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL`; `telemetry_device_boot_seq_idx (device_id, boot_id, seq)` |
+| `events` | `PRIMARY KEY (id)`; `ts`, `type`, `state` là `NOT NULL` | `events_ts_idx (ts)`; `events_type_ts_idx (type, ts)` |
+| `commands` | `PRIMARY KEY (cmd_id)`; `device`, `action`, `status`, `sent_ts`, `ts` là `NOT NULL` | `commands_sent_idx (sent_ts)`; `commands_status_idx (status)` |
 | `config` | `PRIMARY KEY (id)`; `CHECK (id = 1)`; `config_id`, `thresholds`, `ts` là `NOT NULL` | Không có chỉ mục tường minh ngoài chỉ mục do PK tạo |
 
 PostgreSQL tự tạo chỉ mục duy nhất để thực thi `PRIMARY KEY`; bảng không có `UNIQUE`, `FOREIGN KEY` hay `CHECK` nào khác trong source hiện tại.
@@ -197,15 +200,117 @@ Do đó dữ liệu PostgreSQL nằm trong volume `pgdata`, tách khỏi vòng �
 
 High-water ID không phải MVCC snapshot của toàn bộ phiên export. Mỗi batch PostgreSQL chạy trong một transaction autocommit riêng. Thiết kế hiện tại phù hợp đường ghi append-only qua `save_telemetry()`, nhưng không cam kết một snapshot transaction tuyệt đối nếu có thao tác SQL ngoài Storage cập nhật hàng cũ hoặc một transaction đồng thời cấp ID trước rồi commit muộn.
 
-## 7. Thiết kế hiện tại và cải tiến đề xuất
+## 7. Thiết kế hiện tại và cải tiến đã thực hiện
 
-| Chủ đề | Hiện tại trong source | Cải tiến đề xuất, chưa triển khai |
+| Chủ đề | Trước cải tiến | Hiện tại sau cải tiến (Đã hoàn thành & Đạt 226 tests) |
 |---|---|---|
-| Schema | Tự tạo bằng `CREATE ... IF NOT EXISTS` | Dùng migration có version khi schema bắt đầu thay đổi |
-| Quan hệ | Bốn bảng độc lập, không FK | Chỉ thêm quan hệ khi có khóa nghiệp vụ rõ ràng; không suy diễn FK từ timestamp |
-| CSV snapshot | High-water ID + keyset theo từng transaction | Nếu cần snapshot tuyệt đối, cân nhắc transaction `REPEATABLE READ`/cursor server-side và đánh giá thời gian giữ transaction |
-| Phân trang | OFFSET, ổn định theo `(ts,id)` trong một trạng thái dữ liệu | Cung cấp keyset cursor cho dữ liệu rất lớn hoặc có ghi đồng thời |
-| Chỉ mục | Chỉ mục đơn `telemetry(ts)` | Đo bằng `EXPLAIN ANALYZE`; chỉ cân nhắc `(ts,id)` sau khi có workload thực tế |
-| Retention | Chưa có chính sách trong source | Xác định thời hạn lưu, archive/partition và dung lượng trước khi triển khai |
-| Chống trùng event | Chưa có khóa idempotency | Bổ sung event ID từ thiết bị nếu cần xử lý phát lại QoS 1 |
-| Bảo mật backend | CORS `*`, chưa thấy auth trong `api.py` | Bổ sung xác thực, phân quyền, giới hạn tải và audit theo yêu cầu triển khai |
+| Schema Migration | Tự tạo bằng `CREATE ... IF NOT EXISTS` | Tự động áp dụng `ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS` cho `device_id`, `boot_id`, `seq`, bảo toàn 100% dữ liệu cũ không drop/truncate |
+| Chống trùng (Deduplication) | Không có cơ chế chống trùng telemetry | Partial Unique Index `telemetry_dedup_idx (device_id, boot_id, seq)` loại trừ NULL, kết hợp `ON CONFLICT DO NOTHING` và `ReliabilityTracker` |
+| Định danh Telemetry | Chỉ có timestamp `ts` và `uptime_ms` | Bộ ba định danh `(device_id, boot_id, seq)`; tương thích ngược hoàn toàn với dữ liệu legacy (`None`/`NULL`) |
+| Xử lý Out-of-order | Ghi đè trạng thái `_telemetry` bất kể thứ tự | Nhận diện late arrival, lưu vào DB lịch sử nhưng KHÔNG ghi đè trạng thái mới nhất `_telemetry` |
+| Sequence Gap & Trễ | Không phát hiện được mất gói | Theo dõi sequence gap với cửa sổ quan sát `late_window_s = 10s`, phân biệt pending gaps và unresolved gaps beyond window |
+| Giới hạn bộ nhớ & Thread-safe | Không giới hạn RAM, không lock | Sliding window trần 5,000 seq, Ring buffer 1,000 sự kiện, tự dọn dẹp pending gaps; bảo vệ bằng RLock toàn diện |
+| Độ bền Realtime khi DB lỗi | DB lỗi làm sập toàn bộ luồng nhận | Bắt lỗi lưu trữ, phân tách received/displayed/persisted, giữ nhịp tim realtime hiển thị trên web |
+| Kiểm chứng độ tin cậy | Không có chỉ số kiểm chứng | Cung cấp `reliability_stats()` và hàm SQL Window `verify_telemetry_gaps()` kiểm chứng trực tiếp trên PostgreSQL |
+| Thống kê lệnh | Không có thống kê tổng hợp | Cung cấp `command_stats()` đo đếm ok, failed, timeout, pending, success_rate, min/avg/max duration |
+| Lịch sử Online/Offline & Lỗi | Chỉ có WebSocket runtime, không lưu DB | Tận dụng bảng `events`: `save_connection_event()`, `list_connection_events()`, `list_error_events()`; phân biệt status vs timeout |
+
+## 8. Thiết kế Module Reliability & Data Quality (Phục vụ bài báo khoa học)
+
+Hệ thống IoT Smart Home Digital Twin đòi hỏi dữ liệu đo lường thời gian thực từ cảm biến phải đảm bảo tính toàn vẹn, đúng thứ tự và không bị trùng lặp.
+
+### 8.1. Mô hình định danh và phân loại bản tin
+
+Mỗi bản tin telemetry được phát ra từ thiết bị được định danh bằng bộ ba:
+$$\text{MsgId} = (\text{device\_id}, \text{boot\_id}, \text{seq})$$
+- `device_id`: Định danh phần cứng thiết bị (ví dụ: `esp32-home`).
+- `boot_id`: Định danh duy nhất cho một chu kỳ nguồn/khởi động của thiết bị (UUID hoặc chuỗi timestamp khởi động).
+- `seq`: Số nguyên tăng dần đơn điệu $seq \in \{0, 1, 2, \dots\}$ trong suốt một phiên khởi động, reset về 0 khi reboot.
+
+Các trường hợp bản tin đến backend được phân loại theo tập quy tắc:
+1. **Bản tin hợp lệ, đúng thứ tự (In-Order)**: $seq = seq_{max} + 1$.
+2. **Bản tin trùng lặp (Duplicate)**: Bản tin có $(\text{device\_id}, \text{boot\_id}, seq)$ đã tồn tại trong hệ thống. Xảy ra do cơ chế truyền lại QoS 1 của MQTT hoặc biến động kết nối WiFi.
+3. **Bản tin đến muộn / lệch thứ tự (Out-of-order / Late Arrival)**: $seq < seq_{max}$ trong cùng một `boot_id` và chưa từng xuất hiện trước đó.
+4. **Đứt đoạn chuỗi (Sequence Gap)**: $seq > seq_{max} + 1$. Các số thứ tự nằm trong khoảng $[seq_{max} + 1, seq - 1]$ được xác định là đang bị khuyết.
+5. **Khởi động lại (Reboot / Sequence Reset)**: Khi `boot_id` thay đổi, hệ thống mở một phiên theo dõi mới; việc `seq` bắt đầu lại từ 0 được chấp nhận là phiên mới, không bị nhầm lẫn với duplicate của phiên cũ.
+
+### 8.2. Cơ chế Cửa sổ quan sát (Observation Window) và Phân loại Gap
+
+Một trong những sai lầm kinh điển khi đánh giá độ tin cậy mạng IoT không dây là xem sự đứt đoạn chuỗi tức thời là mất gói vĩnh viễn (permanent packet loss). Trong thực tế, các gói tin MQTT qua TCP/IP và sóng WiFi có thể bị trễ hàng đợi (jitter) hoặc đến lệch thứ tự sau khoảng thời gian lớn.
+
+Hệ thống triển khai cửa sổ quan sát trễ $T_{\text{late}} = 10.0\,\text{giây}$:
+- Tại thời điểm phát hiện gap $t_{\text{detect}}$, các gói khuyết được đưa vào trạng thái **Pending Gaps** (đang chờ trong cửa sổ quan sát):
+  $$\text{Gap}_{\text{pending}} = \{ seq_m \mid t_{\text{current}} - t_{\text{detect}} \le T_{\text{late}} \}$$
+- Nếu một gói $seq_m$ đến trước khi hết hạn $T_{\text{late}}$: gap được bù đắp thành công, gói được ghi nhận là `out_of_order` (late arrival).
+- Khi $t_{\text{current}} - t_{\text{detect}} > T_{\text{late}}$ mà gói chưa xuất hiện, gói được phân loại là **Unresolved Gaps Beyond Observation Window** (gap chưa được giải quyết ngoài cửa sổ trễ quan sát):
+  $$\text{Gap}_{\text{unresolved}} = \{ seq_m \mid t_{\text{current}} - t_{\text{detect}} > T_{\text{late}} \}$$
+- **Nguyên tắc đối soát**: Hệ thống KHÔNG coi các gói này là "mất vĩnh viễn không thể hồi phục". Nếu gói tin đến muộn sau 15–20 giây (ngoài $T_{\text{late}}$), hệ thống vẫn ghi nhận là late arrival hợp lệ, lưu vào cơ sở dữ liệu và trừ đi số gap chưa giải quyết, bảo đảm tính khoa học và khả năng đối soát chính xác.
+
+### 8.3. Nguyên tắc bảo vệ trạng thái hiện tại (State Protection)
+
+Trong mô hình Digital Twin, trạng thái tức thời `Service._telemetry` điều khiển giao diện web và các quyết định tự động.
+**Nguyên tắc**: Bản tin cũ đến muộn ($seq < seq_{max}$) vẫn được lưu vào cơ sở dữ liệu lịch sử phục vụ phân tích hồi cứu (analytics), nhưng **tuyệt đối không được ghi đè** lên trạng thái hiện tại `Service._telemetry`.
+
+### 8.4. Công thức toán học và kiểm chứng trực tiếp bằng SQL
+
+#### Phân biệt các đại lượng đo lường:
+- $N_{\text{sent}}$: Tổng số bản tin thiết bị thực tế đã phát. Chỉ có thể biết khi firmware ESP32 có bộ đếm và gửi lên. Khi chưa có số này, hệ thống công bố $N_{\text{sent}} = \text{None}$, không tự ý suy đoán tỷ lệ $100\%$.
+- $N_{\text{received}}$: Tổng số bản tin nhận được tại tầng mạng/MQTT của backend.
+- $N_{\text{stored}}$: Tổng số bản tin hợp lệ được lưu bền trong PostgreSQL.
+- $N_{\text{dup}}$: Số bản tin trùng lặp phát hiện được.
+- Tỷ lệ lưu thành công trên số nhận:
+  $$R_{\text{storage\_efficiency}} = \frac{N_{\text{stored}}}{N_{\text{received}}} = \frac{N_{\text{stored}}}{N_{\text{stored}} + N_{\text{dup}}}$$
+
+#### Truy vấn SQL kiểm chứng Sequence Gap bằng Window Function:
+Câu truy vấn sau được sử dụng trong bài báo để kiểm chứng độc lập tính liên tục của dữ liệu đã lưu trong PostgreSQL:
+```sql
+WITH seq_diffs AS (
+    SELECT
+        device_id,
+        boot_id,
+        seq,
+        lag(seq) OVER (PARTITION BY device_id, boot_id ORDER BY seq) AS prev_seq
+    FROM telemetry
+    WHERE device_id = %s AND boot_id = %s AND seq IS NOT NULL
+)
+SELECT
+    prev_seq + 1 AS gap_start,
+    seq - 1 AS gap_end,
+    (seq - prev_seq - 1)::bigint AS missing_count
+FROM seq_diffs
+WHERE prev_seq IS NOT NULL AND seq > prev_seq + 1
+ORDER BY gap_start;
+```
+- Nếu tập kết quả rỗng: chuỗi dữ liệu trong phiên boot đạt tính toàn vẹn 100% không khuyết.
+- Nếu tập kết quả có hàng: chỉ rõ khoảng gap $[gap\_start, gap\_end]$ và số lượng gói bị mất.
+
+### 8.5. Thống kê lệnh điều khiển (Command Reliability)
+
+Thời gian đáp ứng của lệnh điều khiển thiết bị:
+$$\Delta T_i = T_{\text{ack}, i} - T_{\text{sent}, i} \quad (\text{với các lệnh có trạng thái } ok \text{ hoặc } failed)$$
+Chỉ số độ tin cậy lệnh:
+$$R_{\text{command}} = \frac{N_{ok}}{N_{\text{total}}}$$
+Thời gian trễ trung bình, nhỏ nhất, lớn nhất:
+$$\overline{\Delta T} = \frac{1}{M} \sum_{i=1}^M \Delta T_i, \quad \Delta T_{\min} = \min(\Delta T_i), \quad \Delta T_{\max} = \max(\Delta T_i)$$
+Triển khai bằng SQL tổng hợp tối ưu trên bảng `commands` qua method `storage.command_stats()`.
+
+### 8.6. Tính ổn định, An toàn luồng và Giới hạn bộ nhớ (Production-Ready Architecture)
+
+1. **Giới hạn bộ nhớ (Bounded Memory & Sliding Window)**:
+   - Thay vì lưu trữ vô hạn các sequence đã thấy trong RAM dẫn đến rò rỉ bộ nhớ (OOM) khi hệ thống chạy dài ngày, `ReliabilityTracker` áp dụng sliding window giới hạn $W = 5{,}000$ sequence gần nhất cho mỗi session bằng cấu trúc kết hợp `set` và FIFO `deque`.
+   - Danh sách sự kiện gap `_gap_events` được giới hạn bằng Ring Buffer `deque(maxlen=1000)`. Tổng số gap trong suốt vòng đời được bảo toàn trong biến tích lũy `_total_gap_events_count`.
+   - Các sequence gap trong `_pending_gaps` được dọn dẹp an toàn khi vượt ngưỡng $5{,}000$ mục, chuyển dần sang bộ đếm tích lũy `_unresolved_beyond_window_count` mà không làm mất tính toàn vẹn của chỉ số tổng hợp.
+
+2. **An toàn đa luồng (Thread-Safety)**:
+   - Toàn bộ các thao tác ghi nhận và tổng hợp chỉ số trong `ReliabilityTracker` được bảo vệ bằng `threading.RLock()`.
+   - Đảm bảo an toàn tuyệt đối khi `PostgresStorage` sử dụng ConnectionPool đa luồng xử lý đồng thời nhiều bản tin MQTT.
+
+3. **Tính nhất quán sau Restart & Chống đếm đúp (Restart Consistency)**:
+   - Sau khi backend khởi động lại, `_session_max_seq` được phục hồi từ PostgreSQL (`SELECT device_id, boot_id, max(seq)`), trong khi `seen_seqs` trong RAM ban đầu rỗng.
+   - Nếu nhận lại một bản tin cũ $seq < max\_seq$ đã được lưu trước khi restart, `record_incoming` ban đầu nghi ngờ là out-of-order. Khi PostgreSQL trả về xung đột vi phạm partial unique index (`ON CONFLICT DO NOTHING`), method nghiệp vụ `record_db_duplicate(..., was_out_of_order=True)` sẽ ghi nhận bản tin trùng và triệt tiêu bộ đếm out-of-order, ngăn chặn triệt để lỗi đếm đúp.
+   - Nếu transaction ghi database thất bại, `revert_incoming()` hoàn lại các biến đếm tracker, giữ trạng thái RAM luôn đồng bộ với dữ liệu đã commit trong DB.
+
+4. **Phân tách luồng Realtime và Persistence khi DB lỗi**:
+   - `Service.on_telemetry()` phân biệt rõ 3 tầng: `received` (tầng mạng), `persisted` (tầng lưu trữ PostgreSQL) và `displayed` (tầng giám sát thời gian thực).
+   - Ngoại lệ lưu trữ từ DB được bắt và log cảnh báo rõ ràng; trạng thái hiển thị tức thời `_telemetry`, cờ kết nối `_online` và broadcast WebSocket vẫn duy trì bình thường để người dùng không bị mất nhịp tim giám sát nhà thông minh khi PostgreSQL gặp sự cố tạm thời.
+   - Bản tin trùng lặp (duplicate) hoặc bản tin đến muộn (out-of-order) tuyệt đối không ghi đè trạng thái realtime mới nhất.

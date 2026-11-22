@@ -67,11 +67,13 @@ class Service:
         except Exception:
             log.exception("broadcast failed")
 
-    def _set_online(self, online: bool) -> None:
+    def _set_online(self, online: bool, reason: Optional[str] = None) -> None:
         if online == self._online:
             return
         now = self.clock()
         self._online = online
+        if reason is None:
+            reason = "telemetry" if online else ("timeout" if self._last_seen else "status")
         if online:
             data = {"online": True, "since": now, "offline_since": self._offline_since}
             if self._config["status"] == "pending":
@@ -81,6 +83,15 @@ class Service:
             self._offline_since = now
             data = {"online": False, "since": now, "last_data_ts": self._last_seen}
         self._emit("connection", data)
+        if hasattr(self.storage, "save_connection_event"):
+            try:
+                self.storage.save_connection_event(
+                    state="online" if online else "offline",
+                    reason=reason,
+                    ts=now,
+                )
+            except Exception:
+                log.exception("failed to save connection event")
 
     # ---- ingest --------------------------------------------------------
     def on_telemetry(self, payload) -> bool:
@@ -101,10 +112,29 @@ class Service:
                 return True
 
             rec = dict(t.model_dump(), ts=now)
+            stored: Optional[bool] = None
+            try:
+                stored = self.storage.save_telemetry(rec)
+            except Exception as ex:
+                log.error("failed to save telemetry to storage: %s", ex)
+                stored = None
+
+            if stored is False:
+                # Duplicate: idempotent ignore, do not overwrite state or re-broadcast
+                return True
+
+            # Không để telemetry cũ (out-of-order / late arrival) ghi đè trạng thái mới
+            is_out_of_order = False
+            if (self._telemetry and rec.get("boot_id") and rec.get("seq") is not None
+                    and self._telemetry.get("boot_id") == rec.get("boot_id")
+                    and self._telemetry.get("seq") is not None
+                    and rec["seq"] < self._telemetry["seq"]):
+                is_out_of_order = True
+
+            if not is_out_of_order:
+                self._telemetry = rec
             self._last_seen = now
-            self._telemetry = rec
-            self.storage.save_telemetry(rec)
-            self._set_online(True)
+            self._set_online(True, reason="telemetry")
             self._emit("telemetry", rec)
         return True
 
@@ -126,10 +156,10 @@ class Service:
         text = str(text).strip().strip('"').lower()
         with self._lock:
             if text == "offline":
-                self._set_online(False)
+                self._set_online(False, reason="status")
             elif text == "online":
                 self._last_seen = self.clock()
-                self._set_online(True)
+                self._set_online(True, reason="status")
 
     # ---- state / time --------------------------------------------------
     def get_state(self) -> dict:
@@ -142,7 +172,7 @@ class Service:
             now = self.clock()
             if (self._online and self._last_seen is not None
                     and now - self._last_seen > self.settings.offline_timeout_s):
-                self._set_online(False)
+                self._set_online(False, reason="timeout")
             self._tick_commands(now)
             self._tick_config(now)
             self._emit_sim_if_changed()

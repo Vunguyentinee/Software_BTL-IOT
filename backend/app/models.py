@@ -31,6 +31,9 @@ class Telemetry(BaseModel):
     smoke_alarm: bool = False
     pump_on: bool = False
     modes: dict[str, Mode] = Field(default_factory=dict)
+    device_id: Optional[str] = None
+    boot_id: Optional[str] = None
+    seq: Optional[int] = None
 
 
 class Event(BaseModel):
