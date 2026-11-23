@@ -6,10 +6,10 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .models import CommandRequest, ScenarioRequest, Telemetry, Thresholds
-from .service import DeviceOffline, Service, SimulatorNotActive
+from .service import DeviceOffline, PublishFailed, SafetyOverride, Service, SimulatorNotActive
 
 log = logging.getLogger(__name__)
 
@@ -140,7 +140,14 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
             raise HTTPException(422, str(e))
         except DeviceOffline:
             raise HTTPException(409, "device_offline")
-        return {"cmd_id": rec["cmd_id"], "status": rec["status"]}
+        except SafetyOverride as e:
+            return JSONResponse({"detail": "safety_override", "reason": e.reason}, status_code=409)
+        except PublishFailed:
+            raise HTTPException(503, "mqtt_publish_failed")
+        out = {"cmd_id": rec["cmd_id"], "status": rec["status"]}
+        if rec.get("duplicate"):
+            out["duplicate"] = True
+        return out
 
     @app.get("/api/config")
     def get_config():

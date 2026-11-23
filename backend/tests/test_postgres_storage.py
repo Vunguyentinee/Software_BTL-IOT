@@ -545,3 +545,27 @@ def test_gas_migration_idempotent_and_legacy_data(make):
     assert row["gas_sensor_ok"] is None
     assert row["safety_mode"] is None
     assert row["safety_reason"] is None
+
+
+def test_command_confirmed_ts_and_safety_failure_on_postgres(make):
+    from app.config import Settings
+    from app.service import SafetyOverride, Service
+    from tests.conftest import EXAMPLE, FakeClock, FakePublisher
+
+    s = make()
+    clock = FakeClock()
+    svc = Service(Settings(), s, FakePublisher(), clock=clock)
+    svc.on_telemetry(EXAMPLE)
+    rec = svc.send_command("fan", "off")
+    clock.advance(0.5)
+    svc.on_cmd_ack({"cmd_id": rec["cmd_id"], "result": "ok"})
+    clock.advance(1.0)
+    svc.on_telemetry(dict(EXAMPLE, fan_on=False))
+    got = s.get_command(rec["cmd_id"])
+    assert got["confirmed_ts"] == pytest.approx(clock.now, abs=0.01)
+
+    svc.on_telemetry(dict(EXAMPLE, heat_alarm=True))
+    with pytest.raises(SafetyOverride):
+        svc.send_command("fan", "off")
+    failed = [c for c in s.list_commands() if c["detail"] == "safety_override:heat_alarm"]
+    assert len(failed) == 1 and failed[0]["status"] == "failed"

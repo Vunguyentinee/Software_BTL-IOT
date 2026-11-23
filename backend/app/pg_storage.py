@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS config (
 """
 
 MIGRATION_SQL = """
+ALTER TABLE commands ADD COLUMN IF NOT EXISTS confirmed_ts TIMESTAMPTZ;
 ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS device_id TEXT;
 ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS boot_id TEXT;
 ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS seq BIGINT;
@@ -124,10 +125,11 @@ HISTORY_STATS_SQL = {
 }
 
 COMMAND_COLS = ["cmd_id", "device", "action", "source", "status", "detail"]
-COMMAND_UPDATABLE = {"status", "detail", "ack_ts"}
+COMMAND_UPDATABLE = {"status", "detail", "ack_ts", "confirmed_ts"}
 CMD_SELECT = ("cmd_id, device, action, source, status, detail, "
               "extract(epoch from sent_ts)::float8 AS sent_ts, "
               "extract(epoch from ack_ts)::float8 AS ack_ts, "
+              "extract(epoch from confirmed_ts)::float8 AS confirmed_ts, "
               "extract(epoch from ts)::float8 AS ts")
 
 
@@ -335,8 +337,8 @@ class PostgresStorage:
         for k, v in fields.items():
             if k not in COMMAND_UPDATABLE:
                 continue
-            if k == "ack_ts":
-                sets.append("ack_ts = to_timestamp(%s)")
+            if k in ("ack_ts", "confirmed_ts"):
+                sets.append(f"{k} = to_timestamp(%s)")
             else:
                 sets.append(f"{k} = %s")
             args.append(v)

@@ -28,6 +28,24 @@ class SimulatorNotActive(Exception):
     pass
 
 
+class PublishFailed(Exception):
+    """Backend không publish được lệnh lên MQTT (lệnh không đến ESP32)."""
+
+
+class SafetyOverride(Exception):
+    """Lệnh bị chặn vì ràng buộc an toàn đang hiệu lực."""
+
+    def __init__(self, reason: str):
+        super().__init__(f"safety_override:{reason}")
+        self.reason = reason
+
+
+# Trạng thái telemetry đích mà một lệnh `ok` phải dẫn tới (để suy ra xác nhận vật lý)
+CONFIRM_FIELD = {"fan": ("fan_on", {"on": True, "off": False}),
+                 "led1": ("led1_on", {"on": True, "off": False}),
+                 "door": ("door_command", {"open": "open", "close": "closed"})}
+CONFIRM_WAIT_S = 30.0  # quá lâu không thấy telemetry khớp thì thôi chờ xác nhận
+
 SIM_TIMEOUT_S = 15.0  # quá lâu không có nhịp tim từ simulator thì coi như đã dừng
 
 
@@ -59,6 +77,7 @@ class Service:
         self._sim_ts: Optional[float] = None
         self._sim_emitted: Optional[dict] = None
         self._real_device_last_seen: Optional[float] = None
+        self._awaiting_confirm: dict[str, dict] = {}  # cmd_id -> lệnh `ok` chờ telemetry khớp
 
     # ---- helpers -------------------------------------------------------
     def _emit(self, kind: str, data: dict) -> None:
@@ -136,6 +155,8 @@ class Service:
             self._last_seen = now
             self._set_online(True, reason="telemetry")
             self._emit("telemetry", rec)
+            if not is_out_of_order:
+                self._confirm_commands(rec, now)
         return True
 
     def on_event(self, payload) -> bool:
@@ -181,17 +202,48 @@ class Service:
             self._emit_sim_if_changed()
 
     # ---- commands (Task 4) ---------------------------------------------
+    def _safety_block(self, device: str, action: str) -> Optional[str]:
+        """Lý do an toàn chặn lệnh, hoặc None. Dựa trên telemetry mới nhất."""
+        t = self._telemetry or {}
+        if device == "fan" and action == "off":
+            if t.get("heat_alarm"):
+                return "heat_alarm"
+            if t.get("smoke_alarm"):
+                return "smoke_alarm"
+        if device == "door" and action == "close" and t.get("gas_alarm"):
+            return "gas_alarm"
+        return None
+
     def send_command(self, device: str, action: str, source: str = "web") -> dict:
         validate_command(device, action)
         with self._lock:
             if not self._online:
                 raise DeviceOffline("esp32 is offline")
+            now = self.clock()
+            # Lệnh trùng: cùng thiết bị + hành động đang chờ ACK -> trả lại lệnh cũ, không publish lại
+            for c in self.storage.list_commands(50):
+                if (c["status"] == "pending" and c["device"] == device and c["action"] == action
+                        and now - c["sent_ts"] <= self.settings.cmd_timeout_s):
+                    return dict(c, duplicate=True)
             cmd_id = uuid.uuid4().hex
             rec = {"cmd_id": cmd_id, "device": device, "action": action, "source": source,
-                   "status": "pending", "sent_ts": self.clock(), "ack_ts": None,
-                   "detail": None, "ts": self.clock()}
+                   "status": "pending", "sent_ts": now, "ack_ts": None,
+                   "confirmed_ts": None, "detail": None, "ts": now}
+            reason = self._safety_block(device, action)
+            if reason is not None:
+                rec.update(status="failed", detail=f"safety_override:{reason}")
+                self.storage.save_command(rec)
+                self._emit("command", dict(rec))
+                raise SafetyOverride(reason)
             self.storage.save_command(rec)
-            self.publisher.publish_cmd({"cmd_id": cmd_id, "device": device, "action": action})
+            try:
+                self.publisher.publish_cmd({"cmd_id": cmd_id, "device": device, "action": action})
+            except Exception as ex:
+                log.error("failed to publish command %s: %s", cmd_id, ex)
+                rec = self.storage.update_command(cmd_id, status="failed",
+                                                  detail="mqtt_publish_failed", ack_ts=None) or rec
+                self._emit("command", dict(rec))
+                raise PublishFailed("mqtt_publish_failed") from ex
             self._emit("command", dict(rec))
             return dict(rec)
 
@@ -205,6 +257,8 @@ class Service:
         rec = self.storage.update_command(cmd_id, status=status, detail=detail,
                                           ack_ts=None if status == "timeout" else self.clock())
         self._emit("command", rec)
+        if status == "ok" and rec is not None:
+            self._awaiting_confirm[cmd_id] = rec
         return rec
 
     def on_cmd_ack(self, payload) -> bool:
@@ -214,7 +268,33 @@ class Service:
             log.warning("invalid cmd ack: %s", e)
             return False
         with self._lock:
-            return self._finish_command(ack.cmd_id, ack.result, ack.detail) is not None
+            if self._finish_command(ack.cmd_id, ack.result, ack.detail) is not None:
+                return True
+            cur = self.storage.get_command(ack.cmd_id)
+            if (cur is not None and cur["status"] == "timeout"
+                    and "late_ack:" not in (cur.get("detail") or "")):
+                # ACK đến muộn: giữ nguyên `timeout`, chỉ ghi nhận để đối soát
+                base = cur.get("detail") or "no ack from device"
+                rec = self.storage.update_command(ack.cmd_id,
+                                                  detail=f"{base}; late_ack:{ack.result}")
+                self._emit("command", rec)
+            return False
+
+    def _confirm_commands(self, tel: dict, now: float) -> None:
+        """Telemetry sau ACK khớp trạng thái đích -> ghi `confirmed_ts` (suy luận, không đo trực tiếp)."""
+        for cmd_id, cmd in list(self._awaiting_confirm.items()):
+            ack_ts = cmd.get("ack_ts")
+            if ack_ts is None or now - ack_ts > CONFIRM_WAIT_S:
+                del self._awaiting_confirm[cmd_id]
+                continue
+            spec = CONFIRM_FIELD.get(cmd["device"])
+            if spec is None or cmd["action"] not in spec[1] or now <= ack_ts:
+                continue
+            if tel.get(spec[0]) == spec[1][cmd["action"]]:
+                rec = self.storage.update_command(cmd_id, confirmed_ts=now)
+                del self._awaiting_confirm[cmd_id]
+                if rec is not None:
+                    self._emit("command", rec)
 
     def _tick_commands(self, now: float) -> None:
         for c in self.storage.list_commands(1000):
