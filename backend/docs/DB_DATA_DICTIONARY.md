@@ -30,6 +30,11 @@ Nguồn ghi: `Service.on_telemetry()` kiểm tra payload bằng `models.Telemetr
 | `smoke_raw` | `INTEGER` | Có | — | Giá trị khói thô; model cho phép `null` | Payload telemetry đã qua `Telemetry` |
 | `smoke_alarm` | `BOOLEAN` | Có | — | Trạng thái cảnh báo khói | Payload telemetry; mặc định model là `False` |
 | `pump_on` | `BOOLEAN` | Có | — | Trạng thái bơm | Payload telemetry; mặc định model là `False` |
+| `gas_raw` | `INTEGER` | Có | — | Giá trị nồng độ khí gas thô MQ-2; nullable cho dữ liệu legacy | Payload telemetry đã qua `Telemetry` |
+| `gas_alarm` | `BOOLEAN` | Có | — | Trạng thái cảnh báo rò rỉ khí gas; nullable nếu chưa có sensor | Payload telemetry đã qua `Telemetry` |
+| `gas_sensor_ok` | `BOOLEAN` | Có | — | Trạng thái cảm biến gas hoạt động tốt; null cho bản tin cũ | Payload telemetry đã qua `Telemetry` |
+| `safety_mode` | `TEXT` | Có | — | Chế độ an toàn khẩn cấp (`normal`, `gas_alert`, `fire_alert`) | Payload telemetry đã qua `Telemetry` |
+| `safety_reason` | `TEXT` | Có | — | Lý do kích hoạt chế độ an toàn khẩn cấp | Payload telemetry đã qua `Telemetry` |
 | `modes` | `JSONB` | Có | — | Map chế độ thiết bị; giá trị model là `auto` hoặc `manual` | Payload telemetry; `save_telemetry()` ghi `{}` nếu thiếu/falsy |
 | `device_id` | `TEXT` | Có | Partial Unique Index | Định danh thiết bị phần cứng (ví dụ: `esp32-home`). Nullable để tương thích dữ liệu legacy | Payload `Telemetry` hoặc Settings |
 | `boot_id` | `TEXT` | Có | Partial Unique Index | Định danh phiên khởi động duy nhất của thiết bị (UUID hoặc boot timestamp) | Payload `Telemetry` |
@@ -52,7 +57,7 @@ Nguồn ghi: `Service.on_event()` kiểm tra payload bằng `models.Event`, gắ
 |---|---|---:|---|---|---|
 | `id` | `BIGSERIAL` | Không | PK | Số thứ tự hàng do PostgreSQL cấp | PostgreSQL sequence |
 | `ts` | `TIMESTAMPTZ` | Không | `NOT NULL` | Thời điểm backend nhận event | `Service.clock()` → `to_timestamp()` |
-| `type` | `TEXT` | Không | `NOT NULL` | Loại event; gồm event từ thiết bị (`heat_alarm`, `smoke_alarm`, `pump`, `fan`, `door`, `led1`, `dht_error`) và event kết nối từ backend (`connection`) | Payload event hoặc `Service._set_online()` |
+| `type` | `TEXT` | Không | `NOT NULL` | Loại event; gồm event từ thiết bị (`heat_alarm`, `smoke_alarm`, `pump`, `fan`, `door`, `led1`, `dht_error`, `gas_alarm`, `gas_error`) và event kết nối từ backend (`connection`) | Payload event hoặc `Service._set_online()` |
 | `state` | `TEXT` | Không | `NOT NULL` | Pha event (`start`, `end`) hoặc trạng thái kết nối (`online`, `offline`) | Payload event hoặc `Service._set_online()` |
 | `value` | `DOUBLE PRECISION` | Có | — | Giá trị tùy chọn đi kèm event; source không quy định một đơn vị chung | Payload event |
 | `threshold` | `DOUBLE PRECISION` | Có | — | Ngưỡng tùy chọn đi kèm event; source không quy định một đơn vị chung | Payload event |

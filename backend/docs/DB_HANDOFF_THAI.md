@@ -82,7 +82,7 @@ history_csv(
 - PostgreSQL chốt `max(id)` khi gọi method, sau đó đọc từng batch bằng keyset `(ts,id)`; không `fetchall()` toàn bộ lịch sử.
 - InMemory tạo snapshot O(n) của các trường xuất. Đây là giới hạn thiết kế được chấp nhận vì `max_telemetry` giới hạn deque.
 
-## 3. Danh sách 15 metric lịch sử
+## 3. Danh sách 18 metric lịch sử
 
 Allowlist `HISTORY_METRICS` trong `backend/app/storage.py` gồm đúng:
 
@@ -101,8 +101,13 @@ Allowlist `HISTORY_METRICS` trong `backend/app/storage.py` gồm đúng:
 13. `smoke_raw`
 14. `smoke_alarm`
 15. `pump_on`
+16. `gas_raw` (Mới: Nồng độ gas MQ-2 thô)
+17. `gas_alarm` (Mới: Cảnh báo rò rỉ gas)
+18. `gas_sensor_ok` (Mới: Trạng thái cảm biến gas hoạt động tốt)
 
-`door_command` và `modes` không nằm trong allowlist lịch sử. Không tự mở rộng hoặc thu hẹp danh sách mà không thống nhất lại contract.
+Các trường: `safety_mode`, `safety_reason`, `door_command`, `modes`, `device_id`, `boot_id`, `seq` không nằm trong allowlist metric vẽ đồ thị. Không tự ý đưa các trường định danh hoặc chuỗi trạng thái vào biểu đồ.
+
+Allowlist `HISTORY_STATS_METRICS`: Gồm 4 metric số: `temperature_c`, `humidity_pct`, `smoke_raw`, `gas_raw`.
 
 ## 4. Validation chung
 
@@ -236,6 +241,10 @@ Các điểm cần chốt trước khi nối UI:
 2. **Xác nhận với Vũ & Đức**: Thống nhất đường dẫn URL và query parameters cho các endpoint reliability, command stats và connection history.
 3. **Xác nhận về cửa vật lý**: Giữ nguyên nguyên tắc `door_command` và command ACK chỉ phản ánh tín hiệu gửi tới servo, không tự ý suy diễn thành công tắc vị trí cửa vật lý.
 
+4. **Xác nhận với Hiệu & Kiên (Cảm biến Gas MQ-2 & An toàn)**:
+   - Trạng thái hiện tại: Database & Storage đã hoàn tất migration, model, validation, phân trang, CSV và thống kê cho `gas_raw`, `gas_alarm`, `gas_sensor_ok`, `safety_mode`, `safety_reason`.
+   - Đang chờ phần cứng/firmware (PENDING HARDWARE VALIDATION): Firmware ESP32 của Hiệu và điều khiển an toàn của Kiên chốt hợp đồng MQTT topic và ngưỡng cảnh báo gas thực tế.
+
 ## 9. Chạy test PostgreSQL an toàn
 
 Integration test chỉ được phép trỏ tới database test `smarthome_test` trên cổng `55432`. Fixture trong `backend/tests/test_postgres_storage.py` và `test_reliability.py` có guard kiểm tra cả port và tên database, sau đó mới dùng `reset()` cho test isolation.
@@ -247,4 +256,4 @@ $env:BTL_TEST_DATABASE_URL = 'postgresql://postgres:test@127.0.0.1:55432/smartho
 python -m pytest --basetemp='D:\IOT-BTL\_pytest_thai_temp'
 ```
 
-Kết quả thực tế đạt: **226 passed** (100% PASS) trong 4.37 giây.
+Kết quả thực tế đạt: **237 passed** (100% PASS) trong 8.11 giây.

@@ -87,6 +87,11 @@ erDiagram
         INTEGER smoke_raw
         BOOLEAN smoke_alarm
         BOOLEAN pump_on
+        INTEGER gas_raw "Mới: nồng độ gas MQ-2 thô"
+        BOOLEAN gas_alarm "Mới: cảnh báo rò rỉ gas"
+        BOOLEAN gas_sensor_ok "Mới: trạng thái cảm biến gas"
+        TEXT safety_mode "Mới: chế độ an toàn khẩn cấp"
+        TEXT safety_reason "Mới: nguyên nhân kích hoạt an toàn"
         JSONB modes
         TEXT device_id "Mới: định danh thiết bị"
         TEXT boot_id "Mới: định danh phiên khởi động"
@@ -185,9 +190,9 @@ Do đó dữ liệu PostgreSQL nằm trong volume `pgdata`, tách khỏi vòng �
 
 ### `history_stats()` – thống kê
 
-- Chỉ hỗ trợ `temperature_c`, `humidity_pct`, `smoke_raw`.
+- Hỗ trợ 4 metric số: `temperature_c`, `humidity_pct`, `smoke_raw`, `gas_raw`.
 - Trả `count: int` và `avg`, `min`, `max` là `float | None`.
-- `NULL`, `NaN`, `Infinity`, `-Infinity` không tham gia thống kê. Với `smoke_raw` kiểu `INTEGER`, PostgreSQL không thể lưu các giá trị không hữu hạn; predicate tương ứng là hằng `TRUE` sau kiểm tra `IS NOT NULL`.
+- `NULL`, `NaN`, `Infinity`, `-Infinity` không tham gia thống kê. Với `smoke_raw` và `gas_raw` kiểu `INTEGER`, PostgreSQL không thể lưu các giá trị không hữu hạn; predicate tương ứng là hằng `TRUE` sau kiểm tra `IS NOT NULL`.
 - Tên cột và predicate lấy từ allowlist/hằng `HISTORY_STATS_SQL`, không lấy trực tiếp chuỗi chưa kiểm tra từ người gọi.
 
 ### `history_csv()` – xuất CSV theo keyset
@@ -202,18 +207,19 @@ High-water ID không phải MVCC snapshot của toàn bộ phiên export. Mỗi 
 
 ## 7. Thiết kế hiện tại và cải tiến đã thực hiện
 
-| Chủ đề | Trước cải tiến | Hiện tại sau cải tiến (Đã hoàn thành & Đạt 226 tests) |
+| Chủ đề | Trước cải tiến | Hiện tại sau cải tiến (Đã hoàn thành & Đạt 237 tests) |
 |---|---|---|
-| Schema Migration | Tự tạo bằng `CREATE ... IF NOT EXISTS` | Tự động áp dụng `ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS` cho `device_id`, `boot_id`, `seq`, bảo toàn 100% dữ liệu cũ không drop/truncate |
+| Schema Migration | Tự tạo bằng `CREATE ... IF NOT EXISTS` | Idempotent `ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS` cho `device_id`, `boot_id`, `seq`, `gas_raw`, `gas_alarm`, `gas_sensor_ok`, `safety_mode`, `safety_reason` an toàn 100% |
 | Chống trùng (Deduplication) | Không có cơ chế chống trùng telemetry | Partial Unique Index `telemetry_dedup_idx (device_id, boot_id, seq)` loại trừ NULL, kết hợp `ON CONFLICT DO NOTHING` và `ReliabilityTracker` |
 | Định danh Telemetry | Chỉ có timestamp `ts` và `uptime_ms` | Bộ ba định danh `(device_id, boot_id, seq)`; tương thích ngược hoàn toàn với dữ liệu legacy (`None`/`NULL`) |
 | Xử lý Out-of-order | Ghi đè trạng thái `_telemetry` bất kể thứ tự | Nhận diện late arrival, lưu vào DB lịch sử nhưng KHÔNG ghi đè trạng thái mới nhất `_telemetry` |
-| Sequence Gap & Trễ | Không phát hiện được mất gói | Theo dõi sequence gap với cửa sổ quan sát `late_window_s = 10s`, phân biệt pending gaps và unresolved gaps beyond window |
-| Giới hạn bộ nhớ & Thread-safe | Không giới hạn RAM, không lock | Sliding window trần 5,000 seq, Ring buffer 1,000 sự kiện, tự dọn dẹp pending gaps; bảo vệ bằng RLock toàn diện |
+| Sequence Gap & Trễ | Không phát hiện được mất gói | Interval-based Pending Gaps, không OOM khi gap cực lớn (50,000 hay 100,000,000 gói); theo dõi cửa sổ trễ `late_window_s = 10s` |
+| Giới hạn bộ nhớ & Thread-safe | Không giới hạn RAM, không lock | Sliding window trần 5,000 seq, Ring buffer 1,000 sự kiện, LRU 500 sessions; bảo vệ bằng RLock toàn diện |
 | Độ bền Realtime khi DB lỗi | DB lỗi làm sập toàn bộ luồng nhận | Bắt lỗi lưu trữ, phân tách received/displayed/persisted, giữ nhịp tim realtime hiển thị trên web |
+| Cảm biến Gas & An toàn | Chưa có cột gas trong DB | Đã mở rộng 5 trường gas/safety, kiểm thử phân trang, CSV streaming, stats và event history hoàn tất |
 | Kiểm chứng độ tin cậy | Không có chỉ số kiểm chứng | Cung cấp `reliability_stats()` và hàm SQL Window `verify_telemetry_gaps()` kiểm chứng trực tiếp trên PostgreSQL |
 | Thống kê lệnh | Không có thống kê tổng hợp | Cung cấp `command_stats()` đo đếm ok, failed, timeout, pending, success_rate, min/avg/max duration |
-| Lịch sử Online/Offline & Lỗi | Chỉ có WebSocket runtime, không lưu DB | Tận dụng bảng `events`: `save_connection_event()`, `list_connection_events()`, `list_error_events()`; phân biệt status vs timeout |
+| Lịch sử Online/Offline & Lỗi | Chỉ có WebSocket runtime, không lưu DB | Tận dụng bảng `events`: `save_connection_event()`, `list_connection_events()`, `list_error_events()` (hỗ trợ cả `gas_alarm`, `gas_error`) |
 
 ## 8. Thiết kế Module Reliability & Data Quality (Phục vụ bài báo khoa học)
 
