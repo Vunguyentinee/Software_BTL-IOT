@@ -47,7 +47,8 @@ SCENARIOS: dict[str, tuple[str, dict]] = {
 
 class FakeEsp32:
     def __init__(self, client, device_id: str = "esp32-home", fail_door: bool = False,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 wall_clock: Callable[[], float] = time.time):
         self.client = client
         self.device_id = device_id
         self.boot_id = uuid.uuid4().hex   # mới ở mỗi lần khởi động
@@ -55,6 +56,7 @@ class FakeEsp32:
         self.prefix = f"home/{device_id}/"
         self.fail_door = fail_door
         self.clock = clock
+        self.wall_clock = wall_clock  # đồng hồ thật, để kiểm tra hạn của lệnh
         self.started = clock()
         self.thresholds = Thresholds()
         self.modes = {"led1": "auto", "fan": "auto", "door": "auto"}
@@ -285,6 +287,11 @@ class FakeEsp32:
         cmd_id, device, action = data["cmd_id"], data.get("device"), data.get("action")
         if device not in DEVICES or action not in DEVICES[device] or (device == "door" and self.fail_door):
             self._ack("cmd/ack", {"cmd_id": cmd_id, "result": "failed", "detail": "rejected by device"})
+            return
+        expires = data.get("expires_ts")
+        if isinstance(expires, (int, float)) and not isinstance(expires, bool) and self.wall_clock() > expires:
+            self._ack("cmd/ack", {"cmd_id": cmd_id, "result": "failed", "detail": "expired",
+                                  "device_id": self.device_id, "boot_id": self.boot_id})
             return
         blocked = self._safety_block(device, action)
         if blocked:

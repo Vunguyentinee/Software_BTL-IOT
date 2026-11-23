@@ -6,7 +6,9 @@ from app.service import DeviceOffline
 def test_send_command_publishes_and_is_pending(online_service, publisher, storage):
     rec = online_service.send_command("fan", "on")
     assert rec["status"] == "pending"
-    assert publisher.cmds[0] == {"cmd_id": rec["cmd_id"], "device": "fan", "action": "on"}
+    now = rec["sent_ts"]
+    assert publisher.cmds[0] == {"cmd_id": rec["cmd_id"], "device": "fan", "action": "on",
+                                 "issued_ts": now, "expires_ts": now + 5.0}
     assert storage.get_command(rec["cmd_id"])["status"] == "pending"
 
 

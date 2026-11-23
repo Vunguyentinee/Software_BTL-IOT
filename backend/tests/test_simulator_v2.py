@@ -46,7 +46,7 @@ def clock():
 
 @pytest.fixture
 def sim(rec, clock):
-    return FakeEsp32(rec, clock=clock)
+    return FakeEsp32(rec, clock=clock, wall_clock=clock)
 
 
 def door(sim):
@@ -239,3 +239,34 @@ def test_telemetry_validates_against_backend_model(sim):
 def test_normal_scenario_has_no_gas_alarm(sim):
     t = sim.build_telemetry()
     assert t["gas_alarm"] is False and t["safety_mode"] == "normal" and t["gas_sensor_ok"] is True
+
+
+# ---- lệnh quá hạn (chống thực thi muộn sau khi mạng nối lại) ----------------------------
+def timed_cmd(sim, cmd_id, expires_ts, device="fan", action="on"):
+    sim.handle_message(P + "cmd", json.dumps({"cmd_id": cmd_id, "device": device, "action": action,
+                                              "issued_ts": expires_ts - 5.0,
+                                              "expires_ts": expires_ts}).encode())
+
+
+def test_expired_command_is_rejected_and_not_executed(sim, rec, clock):
+    timed_cmd(sim, "late", expires_ts=clock.now - 0.1)
+    ack = [a for a in rec.acks() if a["cmd_id"] == "late"][0]
+    assert ack["result"] == "failed" and ack["detail"] == "expired"
+    assert sim.build_telemetry()["fan_on"] is False and sim.modes["fan"] == "auto"
+
+
+def test_unexpired_command_is_executed(sim, rec, clock):
+    timed_cmd(sim, "fresh", expires_ts=clock.now + 4.0)
+    assert [a["result"] for a in rec.acks() if a["cmd_id"] == "fresh"] == ["ok"]
+    assert sim.build_telemetry()["fan_on"] is True
+
+
+def test_command_without_expiry_still_accepted(sim, rec):
+    cmd(sim, "fan", "on", "legacy")
+    assert [a["result"] for a in rec.acks() if a["cmd_id"] == "legacy"] == ["ok"]
+
+
+def test_malformed_expiry_is_ignored_not_crash(sim, rec):
+    sim.handle_message(P + "cmd", json.dumps({"cmd_id": "bad", "device": "fan", "action": "on",
+                                              "expires_ts": "soon"}).encode())
+    assert [a["result"] for a in rec.acks() if a["cmd_id"] == "bad"] == ["ok"]

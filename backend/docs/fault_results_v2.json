@@ -1,0 +1,247 @@
+[
+  {
+    "id": "F0",
+    "name": "Hệ thống sẵn sàng (simulator online)",
+    "criterion": "device_online trong 90 s",
+    "measured": "0.0 s",
+    "pass": true
+  },
+  {
+    "id": "F1a",
+    "name": "Restart backend: API hoạt động lại",
+    "criterion": "< 30 s",
+    "measured": "1.1 s sau lệnh restart (đã tính khởi động)",
+    "pass": true
+  },
+  {
+    "id": "F1b",
+    "name": "Restart backend: ESP32 online lại",
+    "criterion": "< 30 s",
+    "measured": "tổng 2.4 s",
+    "pass": true
+  },
+  {
+    "id": "F1c",
+    "name": "Restart backend: lịch sử không mất",
+    "criterion": "số điểm sau >= trước",
+    "measured": "trước=4166, sau=4166",
+    "pass": true
+  },
+  {
+    "id": "F1d",
+    "name": "Restart backend: không ghi trùng dữ liệu cũ",
+    "criterion": "stored_count tăng đúng bằng bản tin mới, trùng không tăng đột biến",
+    "measured": "stored 4166→4166, duplicate 0→0",
+    "pass": true
+  },
+  {
+    "id": "F2a",
+    "name": "MQTT ngừng: /api/health báo mất kết nối",
+    "criterion": "< 10 s",
+    "measured": "0.0 s",
+    "pass": true
+  },
+  {
+    "id": "F2b",
+    "name": "MQTT ngừng: lệnh KHÔNG bị xếp hàng, báo lỗi rõ",
+    "criterion": "HTTP 503 mqtt_publish_failed (hoặc 409 device_offline nếu đã offline)",
+    "measured": "409 {'detail': 'device_offline'} (0.02 s)",
+    "pass": true
+  },
+  {
+    "id": "F2c",
+    "name": "MQTT ngừng: thiết bị bị coi là offline",
+    "criterion": "~10 s không có telemetry (offline_timeout_s=10)",
+    "measured": "0.6 s kể từ lúc dừng broker",
+    "pass": true
+  },
+  {
+    "id": "F2d",
+    "name": "Offline: từ chối lệnh",
+    "criterion": "HTTP 409 device_offline",
+    "measured": "409 {'detail': 'device_offline'}",
+    "pass": true
+  },
+  {
+    "id": "F2e",
+    "name": "MQTT trở lại: backend nối lại",
+    "criterion": "< 30 s",
+    "measured": "0.3 s",
+    "pass": true
+  },
+  {
+    "id": "F2f",
+    "name": "MQTT trở lại: ESP32 online lại",
+    "criterion": "< 60 s",
+    "measured": "0.6 s",
+    "pass": true
+  },
+  {
+    "id": "F2g",
+    "name": "Sau khi MQTT nối lại, lệnh cũ KHÔNG bị thực thi",
+    "criterion": "không có lệnh `ok` mới; fan_on=false",
+    "measured": "lệnh mới=[], fan_on=False",
+    "pass": true
+  },
+  {
+    "id": "F2h-a",
+    "name": "Cắt mạng bán-mở: lệnh gửi khi thiết bị còn 'online'",
+    "criterion": "nhận 200 pending hoặc báo lỗi rõ (không treo)",
+    "measured": "200 {'cmd_id': 'd00ce03d77a747d48050fdbbae9259a6', 'status': 'pending'}",
+    "pass": true
+  },
+  {
+    "id": "F2h-b",
+    "name": "Cắt mạng: lệnh không ACK chuyển `timeout` (không kẹt pending)",
+    "criterion": "status=timeout sau ~5 s",
+    "measured": "('timeout', 'no ack from device')",
+    "pass": true
+  },
+  {
+    "id": "F2h-c",
+    "name": "Cắt mạng: thiết bị bị coi offline",
+    "criterion": "< 25 s",
+    "measured": "2.5 s sau",
+    "pass": true
+  },
+  {
+    "id": "F2h-d",
+    "name": "Nối mạng lại: hệ thống tự phục hồi",
+    "criterion": "< 120 s (không cần restart tay)",
+    "measured": "4.8 s",
+    "pass": true
+  },
+  {
+    "id": "F2h-e",
+    "name": "Sau khi nối lại, lệnh cũ KHÔNG bị thực thi muộn",
+    "criterion": "không lệnh `ok` mới; fan_on=false",
+    "measured": "lệnh=[('on', 'timeout', 'no ack from device; late_ack:failed')], fan_on=False",
+    "pass": true
+  },
+  {
+    "id": "F3a",
+    "name": "DB ngừng: /api/health báo lỗi lưu trữ",
+    "criterion": "storage.ok=false trong 30 s",
+    "measured": "1.9 s",
+    "pass": true
+  },
+  {
+    "id": "F3b",
+    "name": "DB ngừng: lịch sử báo lỗi rõ, không trả rỗng giả",
+    "criterion": "HTTP 503 storage_unavailable, phản hồi < 10 s",
+    "measured": "503 {'detail': 'storage_unavailable'} (2.0 s)",
+    "pass": true
+  },
+  {
+    "id": "F3c",
+    "name": "DB ngừng: trạng thái hiện tại vẫn trả được",
+    "criterion": "HTTP 200, device online",
+    "measured": "200 online=True (0.01 s)",
+    "pass": true
+  },
+  {
+    "id": "F3d",
+    "name": "DB ngừng: lệnh báo lỗi rõ (không báo thành công giả)",
+    "criterion": "HTTP 503, < 10 s",
+    "measured": "503 {'detail': 'storage_unavailable'} (2.0 s)",
+    "pass": true
+  },
+  {
+    "id": "F3e",
+    "name": "DB ngừng: số lỗi được đếm",
+    "criterion": "storage.errors >= 1",
+    "measured": "{'ok': False, 'errors': 3, 'last_error_ts': 1795446357.5122201}",
+    "pass": true
+  },
+  {
+    "id": "F3f",
+    "name": "DB trở lại: tự phục hồi không cần restart backend",
+    "criterion": "< 60 s",
+    "measured": "history 200 sau 4.6 s, storage.ok sau 0.0 s",
+    "pass": true
+  },
+  {
+    "id": "F5a",
+    "name": "Độ trễ lệnh (bình thường, 30 lệnh, SIMULATOR)",
+    "criterion": "100% lệnh ok; ghi avg/P95/max",
+    "measured": {
+      "ack": {
+        "n": 30,
+        "avg_ms": 35.9,
+        "p95_ms": 49.6,
+        "max_ms": 49.7
+      },
+      "confirm": {
+        "n": 30,
+        "avg_ms": 39.0,
+        "p95_ms": 53.4,
+        "max_ms": 55.7
+      },
+      "errors": 0
+    },
+    "pass": true
+  },
+  {
+    "id": "F4a",
+    "name": "Burst 200 bản tin/s: nhận đủ",
+    "criterion": "received tăng 3970",
+    "measured": "gửi 198.5/s, received +3970",
+    "pass": true
+  },
+  {
+    "id": "F4b",
+    "name": "Burst: lưu đủ, không lưu trùng",
+    "criterion": "stored tăng 3961",
+    "measured": "stored +3961",
+    "pass": true
+  },
+  {
+    "id": "F4c",
+    "name": "Burst: đếm đúng bản tin trùng",
+    "criterion": "duplicate tăng 9",
+    "measured": "+9",
+    "pass": true
+  },
+  {
+    "id": "F4d",
+    "name": "Burst: đếm đúng gói mất (bỏ seq có chủ đích)",
+    "criterion": "missing_confirmed tăng 39",
+    "measured": "+39; tỷ lệ mất 0.97 %",
+    "pass": true
+  },
+  {
+    "id": "F4e",
+    "name": "Burst: tài nguyên backend (CPU/RAM, docker stats)",
+    "criterion": "ghi nhận; backend còn phản hồi",
+    "measured": "CPU max=12.54% ; RAM mẫu cuối=48.82MiB ; 11 mẫu",
+    "pass": true
+  },
+  {
+    "id": "F5b",
+    "name": "Độ trễ lệnh KHI CÓ TẢI 200 msg/s (15 lệnh, SIMULATOR)",
+    "criterion": "lệnh vẫn ok; ghi avg/P95/max",
+    "measured": {
+      "ack": {
+        "n": 15,
+        "avg_ms": 13.0,
+        "p95_ms": 20.6,
+        "max_ms": 20.6
+      },
+      "confirm": {
+        "n": 15,
+        "avg_ms": 14.1,
+        "p95_ms": 21.7,
+        "max_ms": 21.7
+      },
+      "errors": 0
+    },
+    "pass": true
+  },
+  {
+    "id": "F4f",
+    "name": "Sau burst: hệ thống bình thường",
+    "criterion": "mqtt.connected, storage.ok, device_online",
+    "measured": "{'mqtt': {'connected': True}, 'storage': {'ok': True, 'errors': 5, 'last_error_ts': 1795446361.5671306}, 'device_online': True}",
+    "pass": true
+  }
+]

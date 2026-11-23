@@ -95,11 +95,24 @@ class Service:
         self._sim_ts: Optional[float] = None
         self._sim_emitted: Optional[dict] = None
         self._real_device_last_seen: Optional[float] = None
+        # Lệnh đang chờ ACK, giữ trong RAM để tick() và chống lệnh trùng KHÔNG phải truy vấn DB
+        self._pending: dict[str, dict] = {}
         self._storage_errors = 0
         self._storage_last_error_ts: Optional[float] = None
         self._storage_ok = True
+        self._load_pending()
         self._rx_intervals: deque = deque(maxlen=1000)  # giây giữa 2 telemetry liên tiếp
         self._awaiting_confirm: dict[str, dict] = {}  # cmd_id -> lệnh `ok` chờ telemetry khớp
+
+    def _load_pending(self) -> None:
+        """Sau khi backend khởi động lại: nạp lại các lệnh còn `pending` để vẫn được xử lý timeout."""
+        try:
+            for c in self.storage.list_commands(200):
+                if c.get("status") == "pending":
+                    self._pending[c["cmd_id"]] = {"device": c["device"], "action": c["action"],
+                                                  "sent_ts": c["sent_ts"]}
+        except Exception as ex:
+            log.warning("could not load pending commands: %s", ex)
 
     # ---- helpers -------------------------------------------------------
     def _emit(self, kind: str, data: dict) -> None:
@@ -153,16 +166,23 @@ class Service:
                 return True
 
             rec = dict(t.model_dump(), ts=now)
-            stored: Optional[bool] = None
-            try:
-                stored = self.storage.save_telemetry(rec)
-                self._storage_ok = True
-            except Exception as ex:
-                log.error("failed to save telemetry to storage: %s", ex)
+
+        # Ghi DB ngoài khóa: DB chậm/ngừng không được làm treo get_state(), health(), tick().
+        stored: Optional[bool] = None
+        storage_error = False
+        try:
+            stored = self.storage.save_telemetry(rec)
+        except Exception as ex:
+            log.error("failed to save telemetry to storage: %s", ex)
+            storage_error = True
+
+        with self._lock:
+            if storage_error:
                 self._storage_ok = False
                 self._storage_errors += 1
                 self._storage_last_error_ts = now
-                stored = None
+            else:
+                self._storage_ok = True
 
             if stored is False:
                 # Duplicate: idempotent ignore, do not overwrite state or re-broadcast
@@ -193,12 +213,12 @@ class Service:
         except (ValueError, ValidationError) as ex:
             log.warning("invalid event: %s", ex)
             return False
+        rec = dict(e.model_dump(), ts=self.clock())
+        try:
+            self.storage.save_event(rec)
+        except Exception as ex:
+            log.error("failed to save event to storage: %s", ex)
         with self._lock:
-            rec = dict(e.model_dump(), ts=self.clock())
-            try:
-                self.storage.save_event(rec)
-            except Exception as ex:
-                log.error("failed to save event to storage: %s", ex)
             self._emit("event", rec)
         return True
 
@@ -262,10 +282,12 @@ class Service:
                 raise DeviceOffline("esp32 is offline")
             now = self.clock()
             # Lệnh trùng: cùng thiết bị + hành động đang chờ ACK -> trả lại lệnh cũ, không publish lại
-            for c in self.storage.list_commands(50):
-                if (c["status"] == "pending" and c["device"] == device and c["action"] == action
+            for cid, c in self._pending.items():
+                if (c["device"] == device and c["action"] == action
                         and now - c["sent_ts"] <= self.settings.cmd_timeout_s):
-                    return dict(c, duplicate=True)
+                    existing = self.storage.get_command(cid)
+                    if existing is not None and existing["status"] == "pending":
+                        return dict(existing, duplicate=True)
             cmd_id = uuid.uuid4().hex
             rec = {"cmd_id": cmd_id, "device": device, "action": action, "source": source,
                    "status": "pending", "sent_ts": now, "ack_ts": None,
@@ -277,9 +299,15 @@ class Service:
                 self._emit("command", dict(rec))
                 raise SafetyOverride(reason)
             self.storage.save_command(rec)
+            self._pending[cmd_id] = {"device": device, "action": action, "sent_ts": now}
             try:
-                self.publisher.publish_cmd({"cmd_id": cmd_id, "device": device, "action": action})
+                # `expires_ts`: thiết bị (có đồng hồ) phải bỏ qua lệnh quá hạn, tránh thực thi muộn
+                # sau khi mạng nối lại (lệnh QoS 1 có thể bị giữ lại và gửi sau).
+                self.publisher.publish_cmd({"cmd_id": cmd_id, "device": device, "action": action,
+                                            "issued_ts": now,
+                                            "expires_ts": now + self.settings.cmd_timeout_s})
             except Exception as ex:
+                self._pending.pop(cmd_id, None)
                 log.error("failed to publish command %s: %s", cmd_id, ex)
                 rec = self.storage.update_command(cmd_id, status="failed",
                                                   detail="mqtt_publish_failed", ack_ts=None) or rec
@@ -294,9 +322,11 @@ class Service:
     def _finish_command(self, cmd_id: str, status: str, detail: Optional[str]) -> Optional[dict]:
         cur = self.storage.get_command(cmd_id)
         if cur is None or cur["status"] != "pending":
+            self._pending.pop(cmd_id, None)
             return None
         rec = self.storage.update_command(cmd_id, status=status, detail=detail,
                                           ack_ts=None if status == "timeout" else self.clock())
+        self._pending.pop(cmd_id, None)
         self._emit("command", rec)
         if status == "ok" and rec is not None:
             self._awaiting_confirm[cmd_id] = rec
@@ -342,9 +372,14 @@ class Service:
                     self._emit("command", rec)
 
     def _tick_commands(self, now: float) -> None:
-        for c in self.storage.list_commands(1000):
-            if c["status"] == "pending" and now - c["sent_ts"] > self.settings.cmd_timeout_s:
-                self._finish_command(c["cmd_id"], "timeout", "no ack from device")
+        for cmd_id, c in list(self._pending.items()):
+            if now - c["sent_ts"] > self.settings.cmd_timeout_s:
+                try:
+                    self._finish_command(cmd_id, "timeout", "no ack from device")
+                except Exception as ex:
+                    # DB đang hỏng: giữ lệnh trong _pending, thử lại ở lần tick sau; không dồn dập gọi DB
+                    log.warning("could not persist command timeout %s: %s", cmd_id, ex)
+                    break
 
     def latency_stats(self, limit: int = 1000) -> dict:
         """avg/P95/max (giây) của gửi->ACK và gửi->xác nhận (từ lệnh đã lưu), và khoảng cách telemetry."""

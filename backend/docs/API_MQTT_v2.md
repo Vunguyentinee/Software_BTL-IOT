@@ -58,7 +58,8 @@ Backend dùng `(device_id, boot_id, seq)` để phát hiện **trùng** (bỏ qu
 
 ```json
 // backend -> ESP32
-{"cmd_id": "9f2c…", "device": "fan", "action": "off"}
+{"cmd_id": "9f2c…", "device": "fan", "action": "off",
+ "issued_ts": 1795446000.12, "expires_ts": 1795446005.12}
 // ESP32 -> backend
 {"cmd_id": "9f2c…", "result": "failed", "detail": "safety_override:heat_alarm",
  "device_id": "esp32-home", "boot_id": "9b1deb4d-…"}
@@ -67,6 +68,7 @@ Backend dùng `(device_id, boot_id, seq)` để phát hiện **trùng** (bỏ qu
 - `device` ∈ `led1`, `fan` (`on`/`off`/`auto`), `door` (`open`/`close`/`auto`).
 - `result` ∈ `ok`, `failed`. ESP32 phải trả ACK trong **5 giây**; quá hạn backend đánh dấu `timeout`.
 - `device_id`, `boot_id` trong ACK là tùy chọn (khuyến nghị).
+- **Hạn dùng của lệnh:** `issued_ts` và `expires_ts` (giây epoch, đồng hồ backend; `expires_ts = issued_ts + 5 s`). Thiết bị **có đồng hồ đồng bộ (NTP)** phải **bỏ qua lệnh đã quá hạn** và trả ACK `failed` với `detail="expired"`, không thay đổi trạng thái. Lý do: lệnh QoS 1 có thể bị giữ lại khi mạng bán-mở và giao muộn sau khi nối lại (đã tái hiện trong kiểm thử F2h: lệnh đã `timeout` ở backend nhưng quạt vẫn bật muộn). Thiết bị không có đồng hồ thì không chống được; xem phần 8.
 - **ACK nghĩa là gì:** `ok` = firmware **đã xử lý** lệnh (ghi trạng thái/cấp tín hiệu ra chân). **Không** có nghĩa cơ cấu vật lý (quạt quay, servo tới vị trí) đã hoàn thành.
 
 ### 4.1 Mã `detail` chuẩn
@@ -74,6 +76,7 @@ Backend dùng `(device_id, boot_id, seq)` để phát hiện **trùng** (bỏ qu
 | `detail` | Ý nghĩa |
 |---|---|
 | `safety_override:<reason>` | Lệnh bị từ chối do ràng buộc an toàn. `<reason>` ∈ `heat_alarm`, `gas_alarm`, `smoke_alarm`. Ví dụ: đang `heat_alarm` thì không cho `fan off` |
+| `expired` | Lệnh đã quá `expires_ts` (không thực thi) |
 | `invalid_action` | Thiết bị/hành động không hợp lệ với firmware |
 | `hardware_fault` | Cơ cấu chấp hành lỗi (relay/servo) |
 | `busy` | Đang thực hiện lệnh khác |
@@ -132,6 +135,8 @@ Mã lỗi mới: `401` chưa/ sai đăng nhập, `403` thiếu quyền, `409 saf
 
 - Chưa có cảm biến phản hồi quạt/cửa: `confirmed_ts` là suy luận từ telemetry.
 - `gas_raw` chưa hiệu chuẩn sang ppm; chưa xác nhận gas và smoke là hai cảm biến độc lập.
+- Firmware **chưa có NTP** thì không kiểm tra được `expires_ts`; lệnh giao muộn vẫn bị thực thi. Cần Hiệu bổ sung đồng bộ giờ (SNTP).
+- Mất gói ở **cuối** luồng telemetry không phát hiện được bằng khoảng hở `seq` (cần có bản tin sau); chỉ phát hiện được khi bản tin kế tiếp đến.
 - `delivery_rate` chỉ tính được khi firmware gửi bộ đếm phát `tx_count` (xem phần 9).
 
 ## 9. Điểm chờ xác nhận
@@ -141,5 +146,6 @@ Mã lỗi mới: `401` chưa/ sai đăng nhập, `403` thiếu quyền, `409 saf
 | 1 | `device_id`, `boot_id`, `seq` đúng quy tắc phần 2 (`boot_id` sinh mới mỗi lần khởi động, `seq` +1) | Hiệu |
 | 2 | Có gửi `tx_count` (số bản tin đã phát) để tính tỷ lệ mất gói thật không | Hiệu |
 | 3 | Mã `detail` ở 4.1 và quy tắc cửa/an toàn ở phần 5 | Hiệu |
+| 3b | Firmware đồng bộ giờ (SNTP) và từ chối lệnh quá `expires_ts` với `detail=expired` | Hiệu |
 | 4 | Tên trường gas/safety khớp schema DB (`gas_raw`, `gas_alarm`, `gas_sensor_ok`, `safety_mode`, `safety_reason`) | Thái |
 | 5 | Cột `confirmed_ts` trong bảng `commands` và endpoint phần 7 | Thái |

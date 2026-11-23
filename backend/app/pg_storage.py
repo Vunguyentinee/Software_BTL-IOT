@@ -134,9 +134,13 @@ CMD_SELECT = ("cmd_id, device, action, source, status, detail, "
 
 
 class PostgresStorage:
-    def __init__(self, url: str, wait_s: float = 30.0):
-        self._pool = ConnectionPool(url, min_size=1, max_size=5, open=False,
-                                    kwargs={"autocommit": True, "row_factory": dict_row})
+    def __init__(self, url: str, wait_s: float = 30.0, pool_timeout_s: float = 2.0):
+        # `timeout` ngắn: DB ngừng thì lỗi ra nhanh (-> HTTP 503) thay vì treo 30 s mặc định của pool.
+        # `check`: kiểm tra kết nối trước khi giao, bỏ kết nối chết sau khi DB khởi động lại.
+        self._pool = ConnectionPool(url, min_size=1, max_size=5, open=False, timeout=pool_timeout_s,
+                                    check=ConnectionPool.check_connection,
+                                    kwargs={"autocommit": True, "row_factory": dict_row,
+                                            "connect_timeout": max(1, int(pool_timeout_s))})
         self._pool.open()
         deadline = time.monotonic() + wait_s
         while True:

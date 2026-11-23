@@ -21,8 +21,8 @@
 
 ## 2. Test tự động (pytest, không cần Docker)
 
-Chạy: `cd backend && .venv\Scripts\python -m pytest -q` → **269 passed, 47 skipped** (47 test PostgreSQL bị bỏ qua khi không đặt `BTL_TEST_DATABASE_URL`).
-Có PostgreSQL thật (`docker run … postgres:16 -p 55432:5432`, đặt `BTL_TEST_DATABASE_URL`) → **316 passed, 0 skipped**. Frontend: `npx vitest run` → **83 passed**.
+Chạy: `cd backend && .venv\Scripts\python -m pytest -q` → **302 passed, 47 skipped** (47 test PostgreSQL bị bỏ qua khi không đặt `BTL_TEST_DATABASE_URL`).
+Có PostgreSQL thật (`docker run … postgres:16 -p 55432:5432`, đặt `BTL_TEST_DATABASE_URL`) → **349 passed, 0 skipped**. Frontend: `npx vitest run` → **83 passed**.
 
 | ID | Nội dung | Đầu vào | Mong đợi | Thực tế | Kết quả | Minh chứng |
 |---|---|---|---|---|---|---|
@@ -96,7 +96,55 @@ Quy tắc đã khóa bằng test: PIR giữ 10 s và phát hiện mới thì đ�
 
 **Giả định cần Hiệu xác nhận:** ngưỡng gas 2000/1500; chế độ thủ công bị ghi đè bởi cảnh báo gas (cửa) và cảnh báo nhiệt (quạt); `smoke_alarm` cũng chặn `fan off`.
 
+### 2.4 Kiểm thử lỗi và hiệu năng trên Docker thật
+
+Công cụ: `backend/tools/fault_scenarios.py`, `backend/tools/load_telemetry.py`. Stack cô lập (`docker compose -p btlfault`, kèm simulator), kết quả thô: [`fault_results_v2.json`](fault_results_v2.json). Lượt cuối: **31/31 PASS**.
+
+> **Cảnh báo về số đo:** mọi số độ trễ/tải dưới đây lấy từ **ESP32 giả lập chạy trên cùng máy (localhost)**. Chúng chứng minh cơ chế đo hoạt động, **không phải** độ trễ của ESP32 thật qua WiFi. Số liệu cho bài báo phải đo lại trên thiết bị thật.
+
+#### Lỗi tìm thấy bằng kiểm thử và đã sửa
+
+| # | Phát hiện (lượt chạy đầu) | Nguyên nhân gốc | Cách sửa | Kiểm chứng |
+|---|---|---|---|---|
+| 1 | **DB ngừng → toàn bộ API treo** (`/api/state`, `/api/health` quá 40 s) | `Service` giữ khóa trong lúc ghi PostgreSQL; pool chờ mặc định 30 s; `tick()` quét DB mỗi giây | Ghi telemetry/event **ngoài khóa**; lệnh đang chờ giữ trong RAM (`tick()` không còn truy vấn DB, nạp lại sau restart); pool `timeout=2 s`, kiểm tra kết nối trước khi giao | `test_db_outage.py` (8 test) + F3a–F3f |
+| 2 | **Lệnh bị thực thi muộn sau khi mạng nối lại** (F2h-e: lệnh đã `timeout` nhưng quạt vẫn bật, `late_ack:ok`) | Lệnh QoS 1 gửi vào kết nối bán-mở được giao sau khi nối lại | Lệnh mang `issued_ts`, `expires_ts` (= +5 s); thiết bị từ chối lệnh quá hạn (`detail=expired`) | `test_simulator_v2.py` (4 test) + F2h-e: ACK trả về `late_ack:failed`, `fan_on=false` |
+| 3 | `publish_cmd` không báo lỗi khi mất MQTT (xếp hàng ngầm) | Hành vi của paho với QoS 1 | Từ chối khi `is_connected()` sai hoặc `rc != 0` (xem mục 1, #8) | `test_mqtt_bridge.py`, F2b, F2g |
+
+#### Bảng kết quả
+
+| ID | Điều kiện / thao tác | Mong đợi | Thực tế | Kết quả |
+|---|---|---|---|---|
+| F1a/b | `docker compose restart backend` | API và ESP32 online lại < 30 s | API 1.1 s, ESP32 online 2.4 s | PASS |
+| F1c/d | Restart backend | Lịch sử không mất; không ghi trùng | 4166 → 4166 điểm; duplicate 0 → 0 | PASS |
+| F2a | Dừng Mosquitto | `/api/health` báo mất MQTT < 10 s | 0.0 s | PASS |
+| F2b/d | Gửi lệnh khi MQTT ngừng | Từ chối rõ, không xếp hàng | 409 `device_offline` (broker dừng làm thiết bị gửi Last Will `offline` ngay) | PASS |
+| F2c | — | Thiết bị bị coi offline | 0.6 s | PASS |
+| F2e/f | Bật lại Mosquitto | Backend và ESP32 tự nối lại | 0.3 s và 0.6 s | PASS |
+| F2g | Sau khi nối lại | Không có lệnh cũ nào được thực thi | Không có lệnh mới; `fan_on=false` | PASS |
+| F2h-a..e | **Cắt mạng bán-mở** (`docker network disconnect` Mosquitto), gửi `fan on` lúc thiết bị còn online | Lệnh `timeout`, offline được phát hiện, tự phục hồi, **lệnh cũ không thực thi muộn** | `timeout`; offline sau 2.5 s; phục hồi 4.8 s; ACK muộn `failed`; `fan_on=false` | PASS (sau sửa #2) |
+| F3a | Dừng PostgreSQL | `/api/health` `storage.ok=false` < 30 s | 1.9 s | PASS |
+| F3b | — | Lịch sử báo lỗi rõ, không trả rỗng giả, < 10 s | 503 `storage_unavailable` sau 2.0 s | PASS |
+| F3c | — | Trạng thái hiện tại vẫn trả được | 200, `online=true`, 0.01 s | PASS |
+| F3d | Gửi lệnh khi DB ngừng | Báo lỗi rõ, không báo thành công giả | 503, 2.0 s | PASS |
+| F3e/f | Bật lại PostgreSQL | Tự phục hồi, không restart backend | Lịch sử 200 sau 4.6 s; `storage.ok` ngay | PASS |
+| F4a–c | Burst **198.5 bản tin/s**, 4000 seq, bỏ 39 gói, lặp 9 bản tin | Nhận đủ; lưu đúng; đếm đúng trùng | received +3970, stored +3961, duplicate +9 | PASS |
+| F4d | — | Đếm đúng gói mất | +39 (tỷ lệ mất 0.97 %) | PASS |
+| F4e | — | Tài nguyên backend | CPU tối đa 12.5 %, RAM 48.8 MiB | PASS |
+| F4f | Sau burst | Hệ thống bình thường | mqtt/storage/device đều ok | PASS |
+| F5a | 30 lệnh, tải bình thường | 100 % lệnh ok | ACK avg 35.9 / P95 49.6 / max 49.7 ms; xác nhận avg 39.0 / P95 53.4 / max 55.7 ms | PASS |
+| F5b | 15 lệnh **khi đang burst 200 msg/s** | Lệnh vẫn ok | ACK avg 13.0 / P95 20.6 / max 20.6 ms; xác nhận avg 14.1 / P95 21.7 / max 21.7 ms | PASS |
+
+Ghi chú: F5a chậm hơn F5b vì simulator làm nhiều việc hơn ở lượt đầu và mỗi lệnh cách nhau 0.5 s; chênh lệch này **không** chứng minh tải làm hệ thống nhanh hơn, chỉ cho thấy tải 200 msg/s không làm xấu độ trễ lệnh ở mức đo được. `confirmed_ts` là suy luận từ telemetry chứ không phải đo vị trí vật lý.
+
+#### Giới hạn đã biết của phương pháp đo
+
+1. **Mất gói ở cuối luồng không phát hiện được** bằng khoảng hở `seq` (cần bản tin sau). Công cụ tải không bỏ gói cuối, và bài báo nên ghi rõ giới hạn này.
+2. Bộ đếm reliability (received/duplicate/out-of-order) là **bộ đếm trong RAM của tiến trình**, mất khi restart; `stored_count` thì bền.
+3. `delivery_rate` vẫn `null` vì firmware chưa gửi `tx_count`.
+4. Chưa thử: ESP32 thật, mất WiFi thật, tải đồng thời nhiều thiết bị, kiểm thử dài hạn (soak), PostgreSQL đầy đĩa.
+
 ## 3. Việc còn lại (chưa có kết quả)
 
-- Kiểm thử lỗi và hiệu năng (Task 6): restart backend, mất MQTT, PostgreSQL tạm ngừng, burst telemetry; đo độ trễ avg/P95/max.
-- Đo độ trễ: **chỉ số liệu từ ESP32 thật mới dùng cho bài báo**; chưa có firmware WiFi/MQTT.
+- **Đo trên ESP32 thật** (độ trễ gửi→ACK→hoàn thành, mất gói qua WiFi): chờ firmware có WiFi + MQTT + NTP (Người 2/3).
+- Hiệu xác nhận các điểm `PROPOSED` ở `API_MQTT_v2.md` phần 9 (đặc biệt: `expires_ts`, ngưỡng gas, quy tắc cửa).
+- Thái xác nhận cột `confirmed_ts` và 4 endpoint reliability.

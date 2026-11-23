@@ -89,7 +89,7 @@ def test_service_and_simulator_end_to_end():
     svc = Service(Settings(), InMemoryStorage(), FakePublisher(), clock=clock)
     bridge = MqttBridge(svc, Settings(), client=ToSim())
     svc.publisher = bridge
-    sim = FakeEsp32(ToBackend())
+    sim = FakeEsp32(ToBackend(), wall_clock=clock)
     holder.update(sim=sim, bridge=bridge)
 
     sim.publish_telemetry()
