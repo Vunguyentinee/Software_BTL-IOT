@@ -195,7 +195,16 @@ def f3_db_down(st):
            f"history 200 sau {back and round(back, 1)} s, storage.ok sau {ok and round(ok, 1)} s", back is not None and back < 60 and ok is not None)
 
 
+def quiet_device(st, timeout=120):
+    """Tiền điều kiện: kịch bản bình thường và không còn khóa cửa (khóa gas giữ 60 s sau khi hết cảnh báo)."""
+    st.http("POST", "/api/sim/scenario", {"scenario": "normal"}, auth=True)
+    ok = wait_for(lambda: (st.http("GET", "/api/state")[1].get("telemetry") or {}).get("door_safety_lock") is False
+                  and device_online(st), timeout, interval=1.0)
+    record("PRE", "Tiền điều kiện: không còn khóa cửa", "door_safety_lock=false", f"{ok and round(ok, 1)} s", ok is not None)
+
+
 def f2p_partition(st):
+    quiet_device(st)
     """Cắt mạng broker (kết nối TCP thành bán-mở: không ai biết đã đứt). Lệnh gửi lúc này không được thực thi muộn."""
     project = st.base[3]
     container, network = f"{project}-mosquitto-1", f"{project}_default"
@@ -260,6 +269,7 @@ def command_burst(st, n, spacing=0.5):
 
 
 def f4_f5_burst_and_latency(st):
+    quiet_device(st)
     env = st.env
     # F5a: độ trễ lệnh khi mạng bình thường
     ack, conf, err = command_burst(st, 30)

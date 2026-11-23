@@ -43,7 +43,7 @@ def test_get_command_unknown_returns_404(client):
     assert client.get("/api/commands/nope").status_code == 404
 
 
-def test_put_config_valid_returns_pending(client, publisher):
+def test_put_config_valid_returns_pending(client, publisher, online_service):
     r = client.put("/api/config", json={"fan_on": 36, "fan_off": 33})
     assert r.status_code == 200 and r.json()["status"] == "pending"
     assert publisher.configs[0]["thresholds"]["fan_on"] == 36

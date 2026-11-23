@@ -567,5 +567,5 @@ def test_command_confirmed_ts_and_safety_failure_on_postgres(make):
     svc.on_telemetry(dict(EXAMPLE, heat_alarm=True))
     with pytest.raises(SafetyOverride):
         svc.send_command("fan", "off")
-    failed = [c for c in s.list_commands() if c["detail"] == "safety_override:heat_alarm"]
+    failed = [c for c in s.list_commands() if c["detail"] == "safety_override_heat_alarm"]
     assert len(failed) == 1 and failed[0]["status"] == "failed"

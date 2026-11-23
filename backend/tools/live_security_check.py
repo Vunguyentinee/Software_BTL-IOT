@@ -109,6 +109,30 @@ for attacker, apw, wit, wpw in cases:
     cl.loop_stop()
     w.loop_stop()
 
+# Mosquitto trả SUBACK thành công cả khi ACL từ chối đọc (chỉ không giao tin), nên kiểm tra bằng việc tin CÓ ĐƯỢC GIAO.
+# Thiết bị phải nhận được: cmd, config/set, event/ack, backend/heartbeat; KHÔNG được nhận sim/scenario.
+w, seen, wst = witness("esp32", ENV["MQTT_DEVICE_PASSWORD"], ["cmd", "config/set", "sim/scenario"])
+for topic in ("cmd", "config/set", "sim/scenario"):
+    bk.publish(P + topic, json.dumps({"probe": "from-backend-" + topic.replace("/", "_")}), qos=1)
+time.sleep(1.5)
+got = {t[len(P):] for t, _p in seen}
+check("MQTT-06 esp32 nhận được cmd và config/set từ backend", {"cmd", "config/set"} <= got, f"got={sorted(got)}")
+check("MQTT-06b esp32 KHÔNG nhận được sim/scenario (không có quyền đọc)", "sim/scenario" not in got, f"got={sorted(got)}")
+w.loop_stop()
+
+for topic in ("event/ack", "backend/heartbeat"):
+    w, seen, wst = witness("esp32", ENV["MQTT_DEVICE_PASSWORD"], [topic])
+    bk.publish(P + topic, json.dumps({"event_id": "legit", "source": "backend"}), qos=1)
+    for attacker, apw in (("simulator", ENV["MQTT_SIM_PASSWORD"]),):
+        cl, st, _ = mqtt_connect(attacker, apw)
+        cl.publish(P + topic, json.dumps({"event_id": "forged-" + attacker, "source": "operator"}), qos=1)
+        time.sleep(1.5)
+        forged = [p for _t, p in seen if b"forged" in p]
+        check(f"MQTT-07 '{attacker}' không giả mạo được {topic}", not forged)
+        cl.loop_stop()
+    check(f"MQTT-07b đối chứng: backend publish {topic} đến được esp32", any(b"legit" in p for _t, p in seen))
+    w.loop_stop()
+
 # thiết bị được publish topic của chính nó, backend (có quyền đọc) nhận được
 rec = []
 bk.on_message = lambda cl, u, m: rec.append((m.topic, m.payload))

@@ -4,13 +4,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .auth import AuthManager
+from .auth import AuthManager, Principal
 from .models import CommandRequest, LoginRequest, ScenarioRequest, Telemetry, Thresholds
-from .service import DeviceOffline, PublishFailed, SafetyOverride, Service, SimulatorNotActive
+from .service import (AlarmNotFound, ControlUnavailable, DeviceOffline, PublishFailed, SafetyOverride,
+                      Service, SimulatorNotActive)
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +24,9 @@ except ImportError:  # pragma: no cover
 
 METRICS = {
     name for name, f in Telemetry.model_fields.items()
-    if name not in ("modes", "door_command", "device_id", "boot_id", "seq", "safety_mode", "safety_reason")
+    if name not in ("modes", "door_command", "device_id", "boot_id", "seq", "safety_mode", "safety_reason",
+                    "connection_id", "control_mode", "backend_state", "tx_count", "door_safety_lock",
+                    "gas_sensor_fault", "active_alarms")
 }
 
 
@@ -204,14 +207,16 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
             raise HTTPException(404, "command not found")
         return cmd
 
-    @app.post("/api/devices/{device}/command", dependencies=[need("operator")])
-    def send_command(device: str, body: CommandRequest):
+    @app.post("/api/devices/{device}/command")
+    def send_command(device: str, body: CommandRequest, user: Principal = need("operator")):
         try:
-            rec = service.send_command(device, body.action)
+            rec = service.send_command(device, body.action, user=user.name)
         except ValueError as e:
             raise HTTPException(422, str(e))
         except DeviceOffline:
             raise HTTPException(409, "device_offline")
+        except ControlUnavailable as e:
+            return JSONResponse({"detail": "control_unavailable", "mode": e.mode}, status_code=409)
         except SafetyOverride as e:
             return JSONResponse({"detail": "safety_override", "reason": e.reason}, status_code=409)
         except PublishFailed:
@@ -220,6 +225,15 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
         if rec.get("duplicate"):
             out["duplicate"] = True
         return out
+
+    @app.post("/api/alarms/{event_id}/ack")
+    def ack_alarm(event_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,64}$"), user: Principal = need("operator")):
+        try:
+            return service.ack_alarm(event_id, user=user.name)
+        except AlarmNotFound:
+            raise HTTPException(404, "alarm_not_found")
+        except PublishFailed:
+            raise HTTPException(503, "mqtt_publish_failed")
 
     @app.get("/api/config")
     def get_config():

@@ -21,8 +21,8 @@ TEMPLATE = {
     "motion_detected": False, "is_dark": False, "door_command": "closed", "fan_on": False,
     "led1_on": False, "led2_on": False, "led3_on": False, "heat_alarm": False, "uptime_ms": 0,
     "smoke_raw": 300, "smoke_alarm": False, "pump_on": False,
-    "gas_raw": 400, "gas_alarm": False, "gas_sensor_ok": True,
-    "safety_mode": "normal", "safety_reason": None, "modes": {}, "is_sim": True,
+    "control_mode": "remote_available", "door_safety_lock": False, "gas_sensor_fault": False,
+    "active_alarms": [], "modes": {}, "is_sim": True,
 }
 
 
@@ -56,7 +56,8 @@ def run_load(host: str, port: int, username: str, password: str, rate: float, co
             dropped += 1
             dropped_seqs.append(seq)
         else:
-            payload = dict(TEMPLATE, device_id=device_id, boot_id=boot_id, seq=seq, uptime_ms=seq * 5)
+            payload = dict(TEMPLATE, device_id=device_id, boot_id=boot_id, seq=seq, tx_count=seq,
+                           connection_id=1, uptime_ms=seq * 5)
             info = client.publish(topic, json.dumps(payload), qos=1)
             sent += 1
             if dup_every and seq % dup_every == 0:

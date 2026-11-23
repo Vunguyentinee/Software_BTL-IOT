@@ -92,11 +92,11 @@ def test_service_exception_does_not_propagate():
     b.handle_message(P + "telemetry", b"{}")
 
 
-def test_publish_config_is_retained_qos1_on_config_set_topic():
+def test_publish_config_is_qos1_not_retained_on_config_set_topic():
     b, _, c = make()
     b.publish_config({"config_id": "k"})
     topic, payload, qos, retain = c.published[0]
-    assert topic == P + "config/set" and qos == 1 and retain is True
+    assert topic == P + "config/set" and qos == 1 and retain is False
     assert '"config_id": "k"' in payload
 
 
@@ -171,3 +171,12 @@ def test_bridge_without_account_does_not_set_credentials():
     client = FakeClient()
     MqttBridge(FakeService(), Settings(), client=client)
     assert client.credentials is None
+
+
+def test_publish_heartbeat_and_event_ack_topics_qos1_not_retained():
+    b, _, c = make()
+    b.publish_heartbeat({"target_boot_id": "b", "target_connection_id": 1})
+    b.publish_event_ack({"event_id": "b-00000001", "source": "backend"})
+    (t1, _, q1, r1), (t2, _, q2, r2) = c.published
+    assert (t1, q1, r1) == (P + "backend/heartbeat", 1, False)
+    assert (t2, q2, r2) == (P + "event/ack", 1, False)

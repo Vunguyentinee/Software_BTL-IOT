@@ -53,6 +53,14 @@ class FakePublisher:
         self.cmds = []
         self.configs = []
         self.sim_scenarios = []
+        self.heartbeats = []
+        self.event_acks = []
+
+    def publish_heartbeat(self, payload):
+        self.heartbeats.append(payload)
+
+    def publish_event_ack(self, payload):
+        self.event_acks.append(payload)
 
     def publish_cmd(self, payload):
         self.cmds.append(payload)

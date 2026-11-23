@@ -39,13 +39,25 @@ class Telemetry(BaseModel):
     device_id: Optional[str] = None
     boot_id: Optional[str] = None
     seq: Optional[int] = None
+    # --- trường của firmware ESP32_DigitalTwin_Gas34_Safety ---
+    connection_id: Optional[int] = None      # phiên MQTT hiện tại (đổi mỗi lần nối lại)
+    control_mode: Optional[str] = None       # remote_available | offline_grace | local_auto
+    backend_state: Optional[str] = None
+    tx_count: Optional[int] = None           # số bản tin firmware đã phát (để tính tỷ lệ mất gói)
+    door_safety_lock: Optional[bool] = None  # cửa đang bị khóa mở theo bảo vệ gas/khói
+    gas_sensor_fault: Optional[bool] = None
+    active_alarms: list[dict] = Field(default_factory=list)
 
 
 class Event(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    type: Literal["heat_alarm", "smoke_alarm", "pump", "fan", "door", "led1", "dht_error", "gas_alarm", "gas_error"]
-    state: Literal["start", "end"]
+    type: Literal["heat_alarm", "smoke_alarm", "pump", "fan", "door", "led1", "dht_error", "gas_alarm", "gas_error",
+                  "alarm_response", "gas_sensor_fault", "door_open_unconfirmed", "fan_rotation_unconfirmed",
+                  "local_control", "remote_control"]
+    state: Literal["start", "end", "retry", "escalated"]
+    event_id: Optional[str] = None   # alarm_response: <boot_id>-<số thứ tự hex>
+    alarm: Optional[str] = None
     value: Optional[float] = None
     threshold: Optional[float] = None
     reason: Optional[str] = None
@@ -60,6 +72,7 @@ class CmdAck(BaseModel):
     detail: Optional[str] = None
     device_id: Optional[str] = None
     boot_id: Optional[str] = None
+    connection_id: Optional[int] = None
 
 
 class ConfigAck(BaseModel):
@@ -68,6 +81,8 @@ class ConfigAck(BaseModel):
     config_id: str
     result: Literal["ok", "rejected"]
     detail: Optional[str] = None
+    boot_id: Optional[str] = None
+    connection_id: Optional[int] = None
 
 
 class Thresholds(BaseModel):

@@ -31,11 +31,17 @@ Quyền hiệu lực lấy từ cấu hình `BTL_USERS` hiện tại, không tin
 
 | Tài khoản | Ghi (publish) | Đọc (subscribe) |
 |---|---|---|
-| `backend` | `cmd`, `config/set`, `sim/scenario` | `telemetry`, `event`, `cmd/ack`, `config/ack`, `status`, `sim/state` |
-| `esp32` | `telemetry`, `event`, `cmd/ack`, `config/ack`, `status` | `cmd`, `config/set` |
-| `simulator` | như `esp32` + `sim/state` | `cmd`, `config/set`, `sim/scenario`, `telemetry` |
+| `backend` | `cmd`, `config/set`, `sim/scenario`, `event/ack`, `backend/heartbeat` | `telemetry`, `event`, `cmd/ack`, `config/ack`, `status`, `sim/state` |
+| `esp32` | `telemetry`, `event`, `cmd/ack`, `config/ack`, `status` | `cmd`, `config/set`, `event/ack`, `backend/heartbeat` |
+| `simulator` | như `esp32` + `sim/state` | `cmd`, `config/set`, `sim/scenario`, `telemetry`, `event/ack`, `backend/heartbeat` |
 
-Hệ quả: **chỉ `backend` được publish lệnh điều khiển**; thiết bị hoặc client lạ không thể giả lệnh. Tài khoản `esp32` bị lộ thì chỉ giả được dữ liệu cảm biến của chính thiết bị đó, không điều khiển được thiết bị khác.
+Hệ quả: **chỉ `backend` được publish lệnh điều khiển, ACK cảnh báo và heartbeat**; thiết bị hoặc client lạ không thể giả lệnh. Tài khoản `esp32` bị lộ thì chỉ giả được dữ liệu cảm biến của chính thiết bị đó, không điều khiển được thiết bị khác.
+
+**Lưu ý vận hành:** khi ACL từ chối *đọc* một topic, Mosquitto vẫn trả SUBACK thành công và chỉ không giao tin (đã kiểm chứng). Firmware vì vậy không báo lỗi mà âm thầm không nhận được tin; thêm topic mới vào firmware thì phải thêm vào `docker/mosquitto.acl`.
+
+**Ràng buộc phiên đích (lớp bảo vệ thứ hai, ở firmware):** lệnh/cấu hình phải mang `target_boot_id`, `target_connection_id` khớp phiên hiện tại của thiết bị, nên lệnh cũ hoặc bản ghi lại (replay) bị từ chối. Backend chỉ lấy phiên đích từ telemetry của đúng `device_id` cấu hình (`BTL_DEVICE_ID`); telemetry của thiết bị khác chỉ được lưu, không đổi trạng thái hay phiên.
+
+**Nhật ký:** mỗi lệnh lưu người gửi (`source = web:<tên đăng nhập>`), kể cả lệnh bị chặn an toàn; xác nhận cảnh báo ghi log kèm người xác nhận.
 
 ## 4. Cấu hình
 
@@ -52,5 +58,6 @@ Firmware ESP32 thật dùng tài khoản `esp32` + `MQTT_DEVICE_PASSWORD`. **M�
 3. **Khóa đăng nhập theo tên đăng nhập**: kẻ tấn công có thể cố ý khóa tài khoản người khác trong 60 giây. Đổi lại chặn dò mật khẩu.
 4. **Giới hạn tốc độ và khóa đăng nhập nằm trong bộ nhớ**: mất khi backend khởi động lại; chỉ đúng với một tiến trình backend.
 5. **Dữ liệu đọc (lịch sử, trạng thái, WebSocket) không cần đăng nhập** theo thiết kế hiện tại.
+   Nhật ký ai gửi lệnh nằm trong bảng `commands` (cột `source`), chưa có màn hình hiển thị; việc xác nhận cảnh báo mới ghi vào log backend, chưa lưu DB.
 6. **Cổng backend `8000` và MQTT `1883` vẫn mở ra mạng nội bộ** (cần cho ESP32 và demo). Tường lửa Windows là lớp bảo vệ ngoài.
 7. PostgreSQL vẫn dùng mật khẩu mặc định `smarthome` vì đổi mật khẩu làm hỏng volume dữ liệu đã có; được bảo vệ bằng việc chỉ bind `127.0.0.1`.

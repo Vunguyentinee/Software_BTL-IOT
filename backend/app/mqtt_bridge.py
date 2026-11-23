@@ -84,7 +84,14 @@ class MqttBridge:
             raise ConnectionError(f"mqtt_publish_rc_{rc}")
 
     def publish_config(self, payload: dict) -> None:
-        self.client.publish(self.prefix + "config/set", json.dumps(payload), qos=1, retain=True)
+        # Không retained: ngưỡng mang phiên đích (boot_id/connection_id), bản lưu sẽ sai phiên sau khi nối lại
+        self.client.publish(self.prefix + "config/set", json.dumps(payload), qos=1, retain=False)
+
+    def publish_heartbeat(self, payload: dict) -> None:
+        self.client.publish(self.prefix + "backend/heartbeat", json.dumps(payload), qos=1, retain=False)
+
+    def publish_event_ack(self, payload: dict) -> None:
+        self.client.publish(self.prefix + "event/ack", json.dumps(payload), qos=1, retain=False)
 
     def publish_sim_scenario(self, payload: dict) -> None:
         self.client.publish(self.prefix + "sim/scenario", json.dumps(payload), qos=1, retain=False)

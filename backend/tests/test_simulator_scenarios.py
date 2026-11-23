@@ -48,8 +48,7 @@ def sim(rec, clock):
 
 def test_scenario_ids_match_the_frontend_list():
     assert list(SCENARIOS) == ["normal", "cooling_fan", "heat_alarm", "smoke_danger", "motion_door",
-                               "dark_light", "dht_error", "pir_warming_up", "esp32_offline",
-                               "gas_leak"]
+                               "dark_light", "dht_error", "pir_warming_up", "esp32_offline"]
 
 
 def test_heat_alarm_scenario_raises_alarm_and_fan_with_events(sim, rec):
@@ -149,7 +148,9 @@ def test_offline_scenario_stops_telemetry(sim, rec):
 
 
 def test_manual_fan_survives_scenario_change(sim):
-    sim.handle_message(P + "cmd", json.dumps({"cmd_id": "c", "device": "fan", "action": "on"}).encode())
+    body = {"cmd_id": "c", "device": "fan", "action": "on",
+            "target_boot_id": sim.boot_id, "target_connection_id": sim.connection_id}
+    sim.handle_message(P + "cmd", json.dumps(body).encode())
     sim.set_scenario("dark_light")
     t = sim.build_telemetry()
     assert t["fan_on"] is True and t["modes"]["fan"] == "manual"

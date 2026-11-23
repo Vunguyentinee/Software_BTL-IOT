@@ -20,6 +20,8 @@ class Publisher(Protocol):
     def publish_cmd(self, payload: dict) -> None: ...
     def publish_config(self, payload: dict) -> None: ...
     def publish_sim_scenario(self, payload: dict) -> None: ...
+    def publish_heartbeat(self, payload: dict) -> None: ...
+    def publish_event_ack(self, payload: dict) -> None: ...
 
 
 class DeviceOffline(Exception):
@@ -40,6 +42,26 @@ class SafetyOverride(Exception):
     def __init__(self, reason: str):
         super().__init__(f"safety_override:{reason}")
         self.reason = reason
+
+
+class ControlUnavailable(Exception):
+    """Thiết bị không ở chế độ nhận lệnh từ xa (offline_grace / local_auto)."""
+
+    def __init__(self, mode: str):
+        super().__init__(f"control_unavailable:{mode}")
+        self.mode = mode
+
+
+class AlarmNotFound(Exception):
+    pass
+
+
+def override_detail(reason: str) -> str:
+    """Mã `detail` giống firmware: safety_override_<lý do>, riêng giữ cửa là safety_door_hold_active."""
+    return "safety_door_hold_active" if reason == "door_hold_active" else f"safety_override_{reason}"
+
+
+HEARTBEAT_PERIOD_S = 2.0
 
 
 # Trạng thái telemetry đích mà một lệnh `ok` phải dẫn tới (để suy ra xác nhận vật lý)
@@ -97,6 +119,8 @@ class Service:
         self._real_device_last_seen: Optional[float] = None
         # Lệnh đang chờ ACK, giữ trong RAM để tick() và chống lệnh trùng KHÔNG phải truy vấn DB
         self._pending: dict[str, dict] = {}
+        self._config_session: Optional[tuple] = None   # phiên mà ngưỡng đã được gửi tới
+        self._last_heartbeat: Optional[float] = None
         self._storage_errors = 0
         self._storage_last_error_ts: Optional[float] = None
         self._storage_ok = True
@@ -156,6 +180,14 @@ class Service:
         except (ValueError, ValidationError) as e:
             log.warning("invalid telemetry: %s", e)
             return False
+        expected_device = getattr(self.settings, "device_id", None)
+        if expected_device and t.device_id and t.device_id != expected_device:
+            # Thiết bị khác (hoặc giả mạo): chỉ lưu để đối soát, KHÔNG được đổi trạng thái, online hay phiên đích
+            try:
+                self.storage.save_telemetry(dict(t.model_dump(), ts=self.clock()))
+            except Exception as ex:
+                log.error("failed to save foreign telemetry: %s", ex)
+            return True
         with self._lock:
             now = self.clock()
             if not is_sim:
@@ -205,6 +237,7 @@ class Service:
             self._emit("telemetry", rec)
             if not is_out_of_order:
                 self._confirm_commands(rec, now)
+                self._resync_config()
         return True
 
     def on_event(self, payload) -> bool:
@@ -220,6 +253,13 @@ class Service:
             log.error("failed to save event to storage: %s", ex)
         with self._lock:
             self._emit("event", rec)
+            if (rec.get("type") == "alarm_response" and rec.get("state") in ("start", "retry", "escalated")
+                    and rec.get("event_id")):
+                # Firmware gửi lại mỗi 3 s và leo thang sau 10 s nếu backend không ACK
+                try:
+                    self.publisher.publish_event_ack({"event_id": rec["event_id"], "source": "backend"})
+                except Exception as ex:
+                    log.warning("could not ack alarm %s: %s", rec["event_id"], ex)
         return True
 
     def on_status(self, text) -> None:
@@ -258,28 +298,49 @@ class Service:
             if (self._online and self._last_seen is not None
                     and now - self._last_seen > self.settings.offline_timeout_s):
                 self._set_online(False, reason="timeout")
+            self._tick_heartbeat(now)
             self._tick_commands(now)
             self._tick_config(now)
             self._emit_sim_if_changed()
 
     # ---- commands (Task 4) ---------------------------------------------
-    def _safety_block(self, device: str, action: str) -> Optional[str]:
-        """Lý do an toàn chặn lệnh, hoặc None. Dựa trên telemetry mới nhất."""
+    def _targets(self) -> dict:
+        """Phiên đích (boot_id, connection_id) lấy từ telemetry mới nhất; {} nếu thiết bị không báo (cũ/simulator)."""
         t = self._telemetry or {}
-        if device == "fan" and action == "off":
-            if t.get("heat_alarm"):
+        if t.get("boot_id") and t.get("connection_id") is not None:
+            return {"target_boot_id": t["boot_id"], "target_connection_id": t["connection_id"]}
+        return {}
+
+    def _session_key(self) -> tuple:
+        t = self._telemetry or {}
+        return (t.get("boot_id"), t.get("connection_id"))
+
+    def _remote_mode_ok(self) -> bool:
+        mode = (self._telemetry or {}).get("control_mode")
+        return mode is None or mode == "remote_available"
+
+    def _safety_block(self, device: str, action: str) -> Optional[str]:
+        """Lý do an toàn chặn lệnh (cùng quy tắc với firmware), hoặc None. Dựa trên telemetry mới nhất."""
+        t = self._telemetry or {}
+        locked = bool(t.get("door_safety_lock"))
+        if device == "fan":
+            if action != "auto" and locked:
+                return "gas_fan_hold"
+            if action == "off" and t.get("heat_alarm"):
                 return "heat_alarm"
-            if t.get("smoke_alarm"):
-                return "smoke_alarm"
-        if device == "door" and action == "close" and t.get("gas_alarm"):
-            return "gas_alarm"
+        if device == "door" and action == "close" and locked:
+            return "smoke_alarm" if t.get("smoke_alarm") else "door_hold_active"
         return None
 
-    def send_command(self, device: str, action: str, source: str = "web") -> dict:
+    def send_command(self, device: str, action: str, source: str = "web", user: Optional[str] = None) -> dict:
         validate_command(device, action)
+        if user:
+            source = f"{source}:{user}"   # nhật ký: ai đã gửi lệnh
         with self._lock:
             if not self._online:
                 raise DeviceOffline("esp32 is offline")
+            if not self._remote_mode_ok():
+                raise ControlUnavailable((self._telemetry or {}).get("control_mode"))
             now = self.clock()
             # Lệnh trùng: cùng thiết bị + hành động đang chờ ACK -> trả lại lệnh cũ, không publish lại
             for cid, c in self._pending.items():
@@ -294,18 +355,19 @@ class Service:
                    "confirmed_ts": None, "detail": None, "ts": now}
             reason = self._safety_block(device, action)
             if reason is not None:
-                rec.update(status="failed", detail=f"safety_override:{reason}")
+                rec.update(status="failed", detail=override_detail(reason))
                 self.storage.save_command(rec)
                 self._emit("command", dict(rec))
                 raise SafetyOverride(reason)
             self.storage.save_command(rec)
             self._pending[cmd_id] = {"device": device, "action": action, "sent_ts": now}
             try:
-                # `expires_ts`: thiết bị (có đồng hồ) phải bỏ qua lệnh quá hạn, tránh thực thi muộn
-                # sau khi mạng nối lại (lệnh QoS 1 có thể bị giữ lại và gửi sau).
+                # Phiên đích chặn lệnh của phiên/boot cũ. Nó KHÔNG chặn lệnh bị trễ trên mạng khi kết nối TCP vẫn
+                # sống (đã tái hiện ở kiểm thử F2h). `expires_ts` là lớp phòng thủ bổ sung: thiết bị có đồng hồ
+                # đồng bộ nên bỏ qua lệnh quá hạn; firmware hiện tại chưa có đồng hồ nên bỏ qua trường này.
                 self.publisher.publish_cmd({"cmd_id": cmd_id, "device": device, "action": action,
-                                            "issued_ts": now,
-                                            "expires_ts": now + self.settings.cmd_timeout_s})
+                                            "issued_ts": now, "expires_ts": now + self.settings.cmd_timeout_s,
+                                            **self._targets()})
             except Exception as ex:
                 self._pending.pop(cmd_id, None)
                 log.error("failed to publish command %s: %s", cmd_id, ex)
@@ -315,6 +377,32 @@ class Service:
                 raise PublishFailed("mqtt_publish_failed") from ex
             self._emit("command", dict(rec))
             return dict(rec)
+
+    # ---- heartbeat và xác nhận cảnh báo (hợp đồng firmware) ---------------------------------------
+    def _tick_heartbeat(self, now: float) -> None:
+        targets = self._targets()
+        if not self._online or not targets:
+            return
+        if self._last_heartbeat is not None and now - self._last_heartbeat < HEARTBEAT_PERIOD_S:
+            return
+        self._last_heartbeat = now
+        try:
+            self.publisher.publish_heartbeat(targets)
+        except Exception as ex:
+            log.warning("could not publish backend heartbeat: %s", ex)
+
+    def ack_alarm(self, event_id: str, user: Optional[str] = None) -> dict:
+        """Người vận hành xác nhận một cảnh báo đang hiệu lực (event_id lấy từ telemetry.active_alarms)."""
+        with self._lock:
+            active = (self._telemetry or {}).get("active_alarms") or []
+            if not any(isinstance(a, dict) and a.get("event_id") == event_id for a in active):
+                raise AlarmNotFound(event_id)
+            try:
+                self.publisher.publish_event_ack({"event_id": event_id, "source": "operator"})
+            except Exception as ex:
+                raise PublishFailed("mqtt_publish_failed") from ex
+            log.info("audit: alarm %s acknowledged by %s", event_id, user)
+            return {"event_id": event_id, "source": "operator", "by": user}
 
     def get_command(self, cmd_id: str) -> Optional[dict]:
         return self.storage.get_command(cmd_id)
@@ -418,23 +506,44 @@ class Service:
                                   "ts": self.clock()})
         self._emit("config", self.get_config())
 
-    def _publish_config(self) -> None:
+    def _publish_config(self) -> bool:
+        """Gửi ngưỡng tới phiên hiện tại của thiết bị. False nếu chưa biết phiên hoặc thiết bị chưa nhận lệnh từ xa."""
         c = self._config
-        self.publisher.publish_config({"config_id": c["config_id"], "thresholds": c["thresholds"]})
+        if not c["config_id"] or self._telemetry is None or not self._remote_mode_ok():
+            return False
+        try:
+            self.publisher.publish_config({"config_id": c["config_id"], "thresholds": c["thresholds"],
+                                           **self._targets()})
+        except Exception as ex:
+            log.error("failed to publish config: %s", ex)
+            self._config_session = None   # thử lại ở bản telemetry kế tiếp
+            return False
+        self._config_session = self._session_key()
+        c["sent_ts"] = self.clock()
+        return True
+
+    def _resync_config(self) -> None:
+        """Thiết bị khởi động lại hoặc nối lại MQTT (phiên mới): gửi lại ngưỡng đang cấu hình."""
+        c = self._config
+        if c["config_id"] and self._session_key() != self._config_session:
+            if self._publish_config():
+                c["status"] = "pending"
+                c["detail"] = None
+                self._emit("config", self.get_config())
 
     def set_config(self, thresholds: Thresholds) -> dict:
         with self._lock:
             self._config = {"config_id": uuid.uuid4().hex, "thresholds": thresholds.model_dump(),
-                            "status": "pending", "detail": None, "sent_ts": self.clock()}
+                            "status": "pending", "detail": None, "sent_ts": None}
+            self._config_session = None
             self._save_and_emit_config()
             self._publish_config()
             return self.get_config()
 
     def on_connected(self) -> None:
+        """Backend vừa nối lại MQTT: gửi lại ngưỡng ở bản telemetry kế tiếp (lúc đó mới có phiên đích hợp lệ)."""
         with self._lock:
-            if self._config["config_id"]:
-                self._config["sent_ts"] = self.clock()
-                self._publish_config()
+            self._config_session = None
 
     def on_config_ack(self, payload) -> bool:
         try:

@@ -1,7 +1,9 @@
 # ACL cho Mosquitto. Chỉ liệt kê những gì được phép; mọi thứ còn lại bị từ chối.
 # Topic gốc: home/esp32-home/   (đổi tên thiết bị thì đổi cả file này)
 #
-# Nguyên tắc: CHỈ `backend` được publish lệnh điều khiển (cmd, config/set, sim/scenario).
+# Nguyên tắc: CHỈ `backend` được publish lệnh điều khiển (cmd, config/set, sim/scenario) và ACK cảnh báo
+# (event/ack), heartbeat (backend/heartbeat). Thiết bị phải ĐỌC event/ack và heartbeat: firmware subscribe
+# các topic này khi khởi động.
 # Thiết bị và simulator chỉ được đọc lệnh và publish dữ liệu/ACK của chính nó.
 
 # --- Backend (máy chủ) -----------------------------------------------------
@@ -15,6 +17,8 @@ topic read  home/esp32-home/sim/state
 topic write home/esp32-home/cmd
 topic write home/esp32-home/config/set
 topic write home/esp32-home/sim/scenario
+topic write home/esp32-home/event/ack
+topic write home/esp32-home/backend/heartbeat
 
 # --- ESP32 thật --------------------------------------------------------------
 user esp32
@@ -25,6 +29,8 @@ topic write home/esp32-home/config/ack
 topic write home/esp32-home/status
 topic read  home/esp32-home/cmd
 topic read  home/esp32-home/config/set
+topic read  home/esp32-home/event/ack
+topic read  home/esp32-home/backend/heartbeat
 
 # --- ESP32 giả lập -----------------------------------------------------------
 user simulator
@@ -38,3 +44,5 @@ topic read  home/esp32-home/telemetry
 topic read  home/esp32-home/cmd
 topic read  home/esp32-home/config/set
 topic read  home/esp32-home/sim/scenario
+topic read  home/esp32-home/event/ack
+topic read  home/esp32-home/backend/heartbeat

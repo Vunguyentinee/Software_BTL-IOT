@@ -10,7 +10,8 @@ def test_default_config_when_nothing_saved(service):
     assert c["thresholds"]["fan_on"] == 35
 
 
-def test_set_config_publishes_and_pending(service, publisher):
+def test_set_config_publishes_and_pending(online_service, publisher):
+    service = online_service
     c = service.set_config(Thresholds(fan_on=36, fan_off=33))
     assert c["status"] == "pending"
     sent = publisher.configs[0]
@@ -70,6 +71,8 @@ def test_restart_republishes_saved_config(service, storage, clock):
     s2 = Service(Settings(), storage, p2, clock=clock)
     assert s2.get_config()["config_id"] == c["config_id"]
     s2.on_connected()
+    assert p2.configs == []          # chưa biết phiên của thiết bị thì chưa gửi
+    s2.on_telemetry(EXAMPLE)         # có telemetry (phiên hợp lệ) mới gửi lại ngưỡng đã lưu
     assert p2.configs[-1]["config_id"] == c["config_id"]
     assert p2.configs[-1]["thresholds"]["smoke_high"] == 3000
 

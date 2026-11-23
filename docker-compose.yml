@@ -75,6 +75,7 @@ services:
     environment:
       BTL_MQTT_USERNAME: simulator
       BTL_MQTT_PASSWORD: ${MQTT_SIM_PASSWORD:?Chưa có .env - chạy docker/make-env.ps1}
+      BTL_SIM_CHECK_EXPIRY: ${SIM_CHECK_EXPIRY:-0}   # 1 = mô phỏng firmware có đồng hồ (từ chối lệnh quá hạn)
     command: ["python", "-m", "simulator.fake_esp32", "--host", "mosquitto"]
     depends_on:
       - mosquitto

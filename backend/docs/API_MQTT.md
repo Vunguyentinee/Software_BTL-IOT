@@ -120,18 +120,17 @@ Dành cho phát triển và demo khi chưa có phần cứng: `docker compose --
 | `normal` | Bình thường (28°C, khói 300) | Không cảnh báo |
 | `cooling_fan` | 36.2°C | Quạt tự bật (`fan` start) |
 | `heat_alarm` | 41.5°C | Cảnh báo nhiệt + LED3 + còi, quạt chạy (`heat_alarm`, `fan` start) |
-| `smoke_danger` | Khói thô 3000 (> `smoke_high`) | Cảnh báo khói + bơm chạy (`smoke_alarm`, `pump` start) |
+| `smoke_danger` | Khói/gas thô 3000 (> `smoke_high`; gas và khói là MỘT cảm biến) | `smoke_alarm` start, bơm chạy, `door_safety_lock=true`, cửa **mở và giữ mở**; sau khi hết cảnh báo cửa vẫn giữ cho tới khi có **60 giây mẫu thấp liên tục** |
 | `motion_door` | Có chuyển động | Mở cửa, bật LED2; cửa giữ mở **10 giây** sau lần cuối PIR phát hiện |
 | `dark_light` | Trời tối | Bật LED1 |
 | `dht_error` | DHT11 lỗi | `temperature_c`/`humidity_pct` là `null`, quạt và cảnh báo giữ trạng thái cũ, `dht_error` start |
 | `pir_warming_up` | PIR khởi động | `pir_ready` false trong 60 giây, chưa nhận chuyển động |
-| `gas_leak` | Gas thô 3000 (≥ 2000) | `gas_alarm` start, `safety_mode=gas_alert`, cửa **mở và giữ mở** khi còn cảnh báo; **60 giây** sau khi hết cảnh báo cửa mới đóng (bật lại thì đếm lại) |
 | `esp32_offline` | Mất kết nối | Simulator ngừng gửi `telemetry`; backend báo offline sau 10 giây. Vẫn đổi được kịch bản để quay lại. |
 
 Quy ước của simulator:
-- **Cửa (auto):** mở khi PIR phát hiện và giữ mở 10 giây sau lần phát hiện cuối. Khi `gas_alarm` bật: mở liên tục (kể cả chế độ thủ công, lệnh `door close` bị từ chối `safety_override:gas_alarm`). Hết cảnh báo gas: giữ mở thêm 60 giây; cảnh báo bật lại thì hủy bộ đếm và đếm lại từ lần hết kế tiếp.
-- **Quạt:** `heat_alarm` bật thì quạt bắt buộc chạy, kể cả khi đang thủ công; lệnh `fan off` bị từ chối `safety_override:heat_alarm` (hoặc `smoke_alarm`). `fan on` và `auto` vẫn được nhận.
-- **Ngưỡng gas của simulator** (`2000` bật / `1500` tắt, ADC 0–4095) là **giả định**, chưa phải số liệu hiệu chuẩn của firmware.
+- **Cửa (auto):** mở khi PIR phát hiện và giữ mở 10 giây sau lần phát hiện cuối. Khi khói/gas báo động: mở liên tục (kể cả chế độ thủ công; `door close` bị từ chối `safety_override_smoke_alarm`). Hết cảnh báo: giữ mở cho tới khi có 60 giây mẫu thấp liên tục (mẫu trung bình hoặc cao thì đếm lại; `door close` bị từ chối `safety_door_hold_active`). Chi tiết hợp đồng: `API_MQTT_v2.md`.
+- **Quạt:** `heat_alarm` bật thì quạt bắt buộc chạy, kể cả khi đang thủ công; lệnh `fan off` bị từ chối `safety_override_heat_alarm`; khi cửa đang bị khóa theo khói/gas thì mọi lệnh tay `on/off` bị từ chối `safety_override_gas_fan_hold`. `auto` luôn được nhận.
+- Ngưỡng khói/gas dùng `smoke_high`/`smoke_low` (mặc định `2000`/`1500`, ADC 0–4095, **chưa hiệu chuẩn ppm**), cùng ngưỡng với firmware.
 - Telemetry có `device_id`, `boot_id` (mới mỗi lần khởi động), `seq` (+1 mỗi bản tin) và các trường gas/safety (xem `API_MQTT_v2.md`).
 - Quay về `normal` thì cảnh báo tắt theo ngưỡng tắt (`heat_alarm_off`, `smoke_low`), tương ứng sự kiện `end`.
 - Sự kiện (`event`) chỉ gửi khi trạng thái **đổi** (start/end), không lặp theo từng bản tin.

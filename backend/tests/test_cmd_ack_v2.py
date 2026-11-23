@@ -63,7 +63,7 @@ def test_safety_override_blocks_fan_off_during_heat_alarm(service, publisher, st
     assert ei.value.reason == "heat_alarm"
     assert publisher.cmds == []
     [cmd] = storage.list_commands()
-    assert cmd["status"] == "failed" and cmd["detail"] == "safety_override:heat_alarm"
+    assert cmd["status"] == "failed" and cmd["detail"] == "safety_override_heat_alarm"
 
 
 def test_fan_on_and_auto_allowed_during_heat_alarm(service, publisher):
@@ -73,11 +73,11 @@ def test_fan_on_and_auto_allowed_during_heat_alarm(service, publisher):
     assert len(publisher.cmds) == 2
 
 
-def test_door_close_blocked_during_gas_alarm(service, publisher):
-    service.on_telemetry(_tel(gas_alarm=True, door_command="open"))
+def test_door_close_blocked_during_smoke_gas_alarm(service, publisher):
+    service.on_telemetry(_tel(smoke_alarm=True, door_safety_lock=True, door_command="open"))
     with pytest.raises(SafetyOverride) as ei:
         service.send_command("door", "close")
-    assert ei.value.reason == "gas_alarm"
+    assert ei.value.reason == "smoke_alarm"
     assert publisher.cmds == []
 
 
