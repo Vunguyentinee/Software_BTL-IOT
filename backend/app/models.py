@@ -58,6 +58,8 @@ class CmdAck(BaseModel):
     cmd_id: str
     result: Literal["ok", "failed"]
     detail: Optional[str] = None
+    device_id: Optional[str] = None
+    boot_id: Optional[str] = None
 
 
 class ConfigAck(BaseModel):

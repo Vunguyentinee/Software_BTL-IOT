@@ -97,3 +97,17 @@ def test_event_gas_alarm_and_error():
         "uptime_ms": 51000,
     })
     assert e2.type == "gas_error"
+
+
+def test_cmd_ack_accepts_device_and_boot_id():
+    from app.models import CmdAck
+    a = CmdAck.model_validate({"cmd_id": "c1", "result": "failed",
+                               "detail": "safety_override:heat_alarm",
+                               "device_id": "esp32-home", "boot_id": "b-1"})
+    assert a.device_id == "esp32-home" and a.boot_id == "b-1"
+
+
+def test_cmd_ack_old_payload_still_valid():
+    from app.models import CmdAck
+    a = CmdAck.model_validate({"cmd_id": "c1", "result": "ok"})
+    assert a.device_id is None and a.boot_id is None and a.detail is None
