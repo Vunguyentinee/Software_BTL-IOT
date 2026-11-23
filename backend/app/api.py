@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 METRICS = {
     name for name, f in Telemetry.model_fields.items()
-    if name != "modes" and name != "door_command"
+    if name not in ("modes", "door_command", "device_id", "boot_id", "seq", "safety_mode", "safety_reason")
 }
 
 

@@ -11,7 +11,12 @@ Các phần đã triển khai ở tầng Storage:
 | `393a3f3` | `history_csv()` – xuất CSV theo batch/keyset |
 | `4bfaf05` | Integration test persistence qua Storage instance mới |
 
-Ba method lịch sử mới có trong `Storage` Protocol, `InMemoryStorage` và `PostgresStorage`. `backend/app/api.py` hiện chỉ expose `GET /api/history` dùng method cũ `history()`. Chưa có endpoint REST cho statistics, pagination hoặc CSV trong source hiện tại.
+Ba method lịch sử mới có trong `Storage` Protocol, `InMemoryStorage` và `PostgresStorage`. Đồng thời, `backend/app/api.py` đã tích hợp đầy đủ 3 endpoint REST:
+- `GET /api/history/stats?metric=...&from=...&to=...`
+- `GET /api/history/page?metric=...&from=...&to=...&limit=...&offset=...`
+- `GET /api/history.csv?metric=...&from=...&to=...&batch_size=...` (chú ý đường dẫn có đuôi `.csv`, không phải `/csv`)
+
+Các endpoint mở rộng về độ tin cậy và sự kiện (`reliability_stats`, `command_stats`, `list_connection_events`, `list_error_events`) hiện đã hoàn tất ở tầng Storage, sẵn sàng để Vũ cân nhắc expose lên REST API khi cần thiết.
 
 ## 2. Contract Storage
 
@@ -82,7 +87,7 @@ history_csv(
 - PostgreSQL chốt `max(id)` khi gọi method, sau đó đọc từng batch bằng keyset `(ts,id)`; không `fetchall()` toàn bộ lịch sử.
 - InMemory tạo snapshot O(n) của các trường xuất. Đây là giới hạn thiết kế được chấp nhận vì `max_telemetry` giới hạn deque.
 
-## 3. Danh sách 15 metric lịch sử
+## 3. Danh sách 18 metric lịch sử
 
 Allowlist `HISTORY_METRICS` trong `backend/app/storage.py` gồm đúng:
 
@@ -101,8 +106,13 @@ Allowlist `HISTORY_METRICS` trong `backend/app/storage.py` gồm đúng:
 13. `smoke_raw`
 14. `smoke_alarm`
 15. `pump_on`
+16. `gas_raw` (Mới: Nồng độ gas MQ-2 thô)
+17. `gas_alarm` (Mới: Cảnh báo rò rỉ gas)
+18. `gas_sensor_ok` (Mới: Trạng thái cảm biến gas hoạt động tốt)
 
-`door_command` và `modes` không nằm trong allowlist lịch sử. Không tự mở rộng hoặc thu hẹp danh sách mà không thống nhất lại contract.
+Các trường: `safety_mode`, `safety_reason`, `door_command`, `modes`, `device_id`, `boot_id`, `seq` không nằm trong allowlist metric vẽ đồ thị. Không tự ý đưa các trường định danh hoặc chuỗi trạng thái vào biểu đồ.
+
+Allowlist `HISTORY_STATS_METRICS`: Gồm 4 metric số: `temperature_c`, `humidity_pct`, `smoke_raw`, `gas_raw`.
 
 ## 4. Validation chung
 
@@ -172,7 +182,7 @@ Nhằm tăng cường độ ổn định cho hệ thống và đáp ứng yêu c
 1. **Bảo vệ luồng Realtime khi Database gặp sự cố tạm thời**:
    - Trong `on_telemetry()`: Bọc lệnh gọi `self.storage.save_telemetry(rec)` trong `try ... except Exception`.
    - Nếu lưu vào DB thất bại (ví dụ PostgreSQL rớt kết nối mạng hoặc timeout): log lỗi bằng `log.error`, nhưng **không để ngoại lệ làm sập luồng nhận MQTT**. Trạng thái realtime `_telemetry`, cập nhật nhịp tim `_last_seen`, `_set_online(True)` và broadcast WebSocket vẫn hoạt động bình thường, giúp giao diện giám sát nhà thông minh không bị gián đoạn.
-   - Tuyệt đối không coi failed persistence là `stored = True` (gán `stored = None`).
+   - Không coi failed persistence là `stored = True` (gán `stored = None`).
    - Nếu bản tin là duplicate (`stored is False`): bỏ qua một cách idempotent, không ghi đè và không re-broadcast.
    - Vẫn bảo toàn 100% cơ chế ưu tiên ESP32 thật so với simulator trong commit `da4cb44`.
 2. **Phân biệt lý do ngoại tuyến tường minh trong `_set_online`**:
@@ -236,6 +246,10 @@ Các điểm cần chốt trước khi nối UI:
 2. **Xác nhận với Vũ & Đức**: Thống nhất đường dẫn URL và query parameters cho các endpoint reliability, command stats và connection history.
 3. **Xác nhận về cửa vật lý**: Giữ nguyên nguyên tắc `door_command` và command ACK chỉ phản ánh tín hiệu gửi tới servo, không tự ý suy diễn thành công tắc vị trí cửa vật lý.
 
+4. **Xác nhận với Hiệu & Kiên (Cảm biến Gas MQ-2 & An toàn)**:
+   - Trạng thái hiện tại: Database & Storage đã hoàn tất migration, model, validation, phân trang, CSV và thống kê cho `gas_raw`, `gas_alarm`, `gas_sensor_ok`, `safety_mode`, `safety_reason`.
+   - Đang chờ phần cứng/firmware (PENDING HARDWARE VALIDATION): Firmware ESP32 của Hiệu và điều khiển an toàn của Kiên chốt hợp đồng MQTT topic và ngưỡng cảnh báo gas thực tế.
+
 ## 9. Chạy test PostgreSQL an toàn
 
 Integration test chỉ được phép trỏ tới database test `smarthome_test` trên cổng `55432`. Fixture trong `backend/tests/test_postgres_storage.py` và `test_reliability.py` có guard kiểm tra cả port và tên database, sau đó mới dùng `reset()` cho test isolation.
@@ -247,4 +261,4 @@ $env:BTL_TEST_DATABASE_URL = 'postgresql://postgres:test@127.0.0.1:55432/smartho
 python -m pytest --basetemp='D:\IOT-BTL\_pytest_thai_temp'
 ```
 
-Kết quả thực tế đạt: **226 passed** (100% PASS) trong 4.37 giây.
+Kết quả thực tế đạt: **239 passed** trong 8.25 giây trên PostgreSQL test container `btl-iot-testdb` (port 55432).

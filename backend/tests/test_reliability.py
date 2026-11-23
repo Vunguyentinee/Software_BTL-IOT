@@ -616,3 +616,269 @@ def test_terminology_unresolved_gaps_and_late_arrival():
     stats_after_late = tracker.get_stats(stored_count=3, device_id=dev, now=t0 + 21.0)
     assert stats_after_late["out_of_order_count"] == 1
     assert stats_after_late["unresolved_gaps_beyond_window"] == 1
+
+
+# ==============================================================================
+# 19. Test Huge Sequence Gap (50,000 & 100,000,000) Không OOM & Late Arrival
+# ==============================================================================
+def test_huge_sequence_gap_no_oom_and_late_arrival():
+    tracker = ReliabilityTracker(late_window_s=10.0)
+    dev = "esp32-huge"
+    boot = "boot-huge"
+
+    t0 = 1000.0
+    tracker.record_incoming(dev, boot, 1, now=t0)
+
+    # 1. Gap 50,000: seq nhảy từ 1 lên 50,002 (thiếu 50,000 gói từ 2 đến 50,001)
+    res_50k = tracker.record_incoming(dev, boot, 50002, now=t0 + 1.0)
+    assert res_50k.is_gap is True
+    assert res_50k.gap_count == 50000
+
+    stats_50k = tracker.get_stats(stored_count=2, device_id=dev, now=t0 + 2.0)
+    assert stats_50k["gaps_count"] == 1
+    assert stats_50k["missing_packets_pending"] == 50000
+
+    # Gói đến muộn trong gap 50k: seq=500 đến muộn
+    res_late = tracker.record_incoming(dev, boot, 500, now=t0 + 3.0)
+    assert res_late.is_out_of_order is True
+    assert res_late.resolved_gap_seq == 500
+
+    stats_after_late = tracker.get_stats(stored_count=3, device_id=dev, now=t0 + 4.0)
+    assert stats_after_late["missing_packets_pending"] == 49999
+
+    # 2. Gap 100,000,000 (100 triệu gói): seq nhảy từ 50,002 lên 100,050,003
+    # Phải thực thi ngay lập tức O(1) mà KHÔNG gây OOM MemoryError!
+    res_100m = tracker.record_incoming(dev, boot, 100050003, now=t0 + 5.0)
+    assert res_100m.is_gap is True
+    assert res_100m.gap_count == 100000000
+
+    stats_100m = tracker.get_stats(stored_count=4, device_id=dev, now=t0 + 6.0)
+    assert stats_100m["gaps_count"] == 2
+    assert stats_100m["missing_packets_pending"] == 49999 + 100000000
+
+    # 3. Sau khi quá cửa sổ late_window_s (10s) -> chuyển thành unresolved_gaps_beyond_window
+    stats_expired = tracker.get_stats(stored_count=4, device_id=dev, now=t0 + 20.0)
+    assert stats_expired["missing_packets_pending"] == 0
+    assert stats_expired["unresolved_gaps_beyond_window"] == 49999 + 100000000
+
+
+# ==============================================================================
+# 20. Test Restart Duplicate Với seq == max_seq Không Sinh Gap Rác
+# ==============================================================================
+def test_restart_duplicate_seq_equals_max_seq_no_garbage_gap(postgres_storage):
+    dev = "esp32-restart-exact"
+    boot = "boot-exact"
+
+    # Lưu gói seq=1 và seq=5 vào PostgreSQL
+    postgres_storage.save_telemetry(tel(100.0, 26.0, device_id=dev, boot_id=boot, seq=1))
+    postgres_storage.save_telemetry(tel(102.0, 27.0, device_id=dev, boot_id=boot, seq=5))
+
+    # Restart backend: đóng và mở storage instance mới
+    postgres_storage.close()
+    from app.pg_storage import PostgresStorage
+    new_storage = PostgresStorage(URL)
+
+    # Nhận lại đúng seq=5 (bằng chính max_seq đã lưu trước restart)
+    saved = new_storage.save_telemetry(tel(102.0, 27.0, device_id=dev, boot_id=boot, seq=5))
+    assert saved is False  # Bị phát hiện duplicate và từ chối lưu
+
+    stats = new_storage.reliability_stats(device_id=dev)
+    assert stats["duplicate_count"] == 1
+    # Tuyệt đối không sinh gap rác có count=0 hay from_seq > to_seq!
+    assert stats["gaps_count"] == 0
+    assert len(stats["gap_events"]) == 0
+    assert stats["missing_packets_pending"] == 0
+    new_storage.close()
+
+
+# ==============================================================================
+# 21. Test Revert Incoming Tính Nguyên Tử Khi DB Thất Bại
+# ==============================================================================
+def test_revert_incoming_atomicity_and_received_semantics():
+    tracker = ReliabilityTracker()
+    dev = "esp32-atom"
+    boot = "boot-atom"
+
+    # Nhận seq=1 thành công
+    res1 = tracker.record_incoming(dev, boot, 1, now=100.0)
+    assert tracker._session_max_seq[(dev, boot)] == 1
+    assert tracker._received_count == 1
+
+    # Nhận seq=4 (tạo gap 2, 3), nhưng giả lập DB INSERT thất bại (ném Exception)
+    res4 = tracker.record_incoming(dev, boot, 4, now=102.0)
+    assert tracker._session_max_seq[(dev, boot)] == 4
+    assert tracker._received_count == 2
+    assert tracker._total_gap_events_count == 1
+    assert len(tracker._pending_gap_intervals) == 1
+
+    # Gọi revert_incoming do DB rollback
+    tracker.revert_incoming(dev, boot, 4, res4)
+
+    # 1. received_count KHÔNG giảm vì bản tin thực tế đã nhận tại tầng mạng
+    assert tracker._received_count == 2
+
+    # 2. max_seq được hoàn lại về 1 (trước khi nhận seq=4)
+    assert tracker._session_max_seq[(dev, boot)] == 1
+
+    # 3. Gap rác do gói lỗi tạo ra được hủy bỏ
+    assert tracker._total_gap_events_count == 0
+    assert len(tracker._pending_gap_intervals) == 0
+
+    # 4. Khi DB phục hồi, gửi lại seq=4 -> được tiếp nhận bình thường, không bị coi là duplicate
+    res4_retry = tracker.record_incoming(dev, boot, 4, now=104.0)
+    assert res4_retry.is_duplicate is False
+    assert res4_retry.stored is True
+
+
+# ==============================================================================
+# 22. Test Reliability Stats Phân Tách Theo Device ID & Time Scope
+# ==============================================================================
+def test_reliability_stats_device_scoping_and_time_scope():
+    tracker = ReliabilityTracker()
+
+    # Thiết bị Alpha: 10 gói, 2 duplicate, 1 out-of-order
+    for s in [1, 2, 2, 4, 3, 5, 6, 7, 7, 8]:
+        tracker.record_incoming("dev-alpha", "boot-a", s)
+
+    # Thiết bị Beta: 5 gói, 0 duplicate, 0 out-of-order
+    for s in [1, 2, 3, 4, 5]:
+        tracker.record_incoming("dev-beta", "boot-b", s)
+
+    # Lọc theo dev-alpha: chỉ thấy số liệu của dev-alpha
+    stats_alpha = tracker.get_stats(stored_count=7, device_id="dev-alpha")
+    assert stats_alpha["received_count"] == 10
+    assert stats_alpha["duplicate_count"] == 2
+    assert stats_alpha["out_of_order_count"] == 1
+    assert stats_alpha["boot_count"] == 1
+
+    # Lọc theo dev-beta: chỉ thấy số liệu của dev-beta
+    stats_beta = tracker.get_stats(stored_count=5, device_id="dev-beta")
+    assert stats_beta["received_count"] == 5
+    assert stats_beta["duplicate_count"] == 0
+    assert stats_beta["out_of_order_count"] == 0
+    assert stats_beta["boot_count"] == 1
+
+    # Truy vấn có start và end -> trả về thông tin phạm vi đo lường rõ ràng
+    stats_window = tracker.get_stats(stored_count=5, device_id="dev-alpha", start=100.0, end=200.0)
+    assert stats_window["runtime_scope"] == "process_lifetime"
+    assert stats_window["query_window"] == {"start": 100.0, "end": 200.0}
+    assert "stored_count is filtered by [start, end]" in stats_window["scope_note"]
+
+
+# ==============================================================================
+# 23. Test Bounded Memory Với Hàng Trăm Boot Sessions (Session Eviction)
+# ==============================================================================
+def test_bounded_memory_many_boot_sessions_lru():
+    tracker = ReliabilityTracker(max_sessions=100)
+    dev = "esp32-many-boots"
+
+    # Thiết bị liên tục reboot 250 lần sinh 250 boot_ids khác nhau
+    for i in range(250):
+        boot = f"boot-{i}"
+        tracker.record_incoming(dev, boot, 1, now=1000.0 + i)
+
+    # Tổng số session theo dõi trong RAM không bao giờ vượt quá max_sessions (100)
+    assert len(tracker._session_last_active) <= 100
+    assert len(tracker._session_max_seq) <= 100
+
+    # Session mới nhất (boot-249) vẫn còn và hoạt động chuẩn xác
+    assert tracker._session_max_seq.get((dev, "boot-249")) == 1
+
+
+# ==============================================================================
+# 24. Test Service.on_event Không Bị Sập Khi PostgreSQL Lỗi
+# ==============================================================================
+def test_service_on_event_does_not_crash_when_db_fails():
+    clock = FakeClock(100.0)
+    emitted_events = []
+
+    class EventFailingStorage(InMemoryStorage):
+        def save_event(self, rec: dict) -> None:
+            raise RuntimeError("PostgreSQL connection lost")
+
+    storage = EventFailingStorage()
+    svc = Service(
+        Settings := type("S", (), {"offline_timeout_s": 10.0, "cmd_timeout_s": 5.0})(),
+        storage,
+        FakePublisher(),
+        clock=clock,
+        broadcast=lambda msg: emitted_events.append(msg),
+    )
+
+    # Gửi event khi DB lỗi: không ném ngoại lệ làm sập MQTT handler
+    success = svc.on_event({
+        "type": "heat_alarm",
+        "state": "start",
+        "value": 45.0,
+        "uptime_ms": 10000,
+    })
+    assert success is True
+
+    # WebSocket broadcast realtime sự kiện vẫn hoạt động bình thường
+    assert len(emitted_events) == 1
+    assert emitted_events[0]["kind"] == "event"
+    assert emitted_events[0]["data"]["type"] == "heat_alarm"
+
+
+# ==============================================================================
+# 25. Test Bounded Memory Khi Tất Cả Sessions Đều Có Pending Gaps
+# ==============================================================================
+def test_bounded_memory_all_sessions_have_pending_gaps():
+    """Kiểm tra giới hạn bộ nhớ nghiêm ngặt ngay cả khi tất cả sessions đều có pending gaps.
+
+    Khi số lượng session vượt max_sessions, session cũ nhất bị evict phải được dọn sạch
+    khỏi RAM (kể cả pending gap intervals của nó), và missing packets của nó được kết
+    chuyển an toàn vào unresolved counters.
+    """
+    tracker = ReliabilityTracker(max_sessions=10)
+    dev = "esp32-gap-storm"
+
+    # Tạo 25 sessions liên tiếp, mỗi session đều sinh 1 pending gap [2, 9] (8 missing packets)
+    for i in range(25):
+        boot = f"boot-{i}"
+        tracker.record_incoming(dev, boot, 1, now=1000.0 + i * 2)
+        tracker.record_incoming(dev, boot, 10, now=1001.0 + i * 2)
+
+    # 1. Số sessions trong RAM bị chặn cứng ở mức tối đa 10
+    assert len(tracker._session_last_active) <= 10
+    assert len(tracker._session_max_seq) <= 10
+
+    # 2. Số pending gap intervals trong RAM cũng không bị rò rỉ từ 15 sessions đã bị evict
+    assert len(tracker._pending_gap_intervals) <= 10
+
+    # 3. 15 sessions cũ nhất (từ boot-0 đến boot-14) đã bị evict:
+    # 15 sessions * 8 missing packets = 120 missing packets phải được kết chuyển sang unresolved
+    assert tracker._unresolved_beyond_window_count == 15 * 8
+    assert tracker._unresolved_beyond_window_by_device[dev] == 15 * 8
+
+    # 4. Khi lấy stats, tổng số missing packets confirmed phản ánh đúng các sessions bị evict
+    stats = tracker.get_stats(stored_count=50, device_id=dev, now=1100.0)
+    assert stats["missing_packets_confirmed"] >= 120
+    assert stats["boot_count"] <= 10
+
+
+# ==============================================================================
+# 26. Test Hard Cap Cưỡng Chế Khi Bị Bão Interval Fragmentation
+# ==============================================================================
+def test_interval_fragmentation_hard_cap():
+    """Kiểm tra hard cap cưỡng chế khi số gap intervals vượt trần cho phép do phân mảnh."""
+    # Đặt max_pending_gap_intervals = 5
+    tracker = ReliabilityTracker(max_sessions=50, max_pending_gap_intervals=5)
+    dev = "esp32-fragmentation"
+    boot = "boot-frag-1"
+
+    # Gửi seq=1 và seq=100 -> tạo 1 gap lớn [2, 99] (98 missing packets)
+    tracker.record_incoming(dev, boot, 1, now=1000.0)
+    tracker.record_incoming(dev, boot, 100, now=1001.0)
+    assert len(tracker._pending_gap_intervals) == 1
+
+    # Gửi các late arrival rời rạc cắt nhỏ interval: 10, 20, 30, 40, 50, 60
+    # Mỗi lần cắt sẽ chia đôi interval, làm bùng nổ số lượng intervals
+    for late_seq in [10, 20, 30, 40, 50, 60, 70, 80]:
+        tracker.record_incoming(dev, boot, late_seq, now=1002.0)
+
+    # Số lượng intervals trong RAM bị chặn cứng không vượt quá trần 5
+    assert len(tracker._pending_gap_intervals) <= 5
+
+    # Tổng missing packets của các intervals bị đẩy ra khỏi trần được bảo toàn vào unresolved
+    assert tracker._unresolved_beyond_window_count > 0

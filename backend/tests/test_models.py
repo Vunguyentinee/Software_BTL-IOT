@@ -49,3 +49,51 @@ def test_validate_command_ok(device, action):
 def test_validate_command_bad(device, action):
     with pytest.raises(ValueError):
         validate_command(device, action)
+
+
+def test_telemetry_gas_and_safety_fields():
+    # 1. Payload đầy đủ thông tin gas và safety
+    full_gas = dict(
+        EXAMPLE,
+        gas_raw=450,
+        gas_alarm=True,
+        gas_sensor_ok=True,
+        safety_mode="gas_alert",
+        safety_reason="MQ-2 threshold exceeded",
+    )
+    t = Telemetry.model_validate(full_gas)
+    assert t.gas_raw == 450
+    assert t.gas_alarm is True
+    assert t.gas_sensor_ok is True
+    assert t.safety_mode == "gas_alert"
+    assert t.safety_reason == "MQ-2 threshold exceeded"
+
+    # 2. Payload legacy không có gas: các trường giữ None (nullable)
+    t_legacy = Telemetry.model_validate(EXAMPLE)
+    assert t_legacy.gas_raw is None
+    assert t_legacy.gas_alarm is None
+    assert t_legacy.gas_sensor_ok is None
+    assert t_legacy.safety_mode is None
+    assert t_legacy.safety_reason is None
+
+
+def test_event_gas_alarm_and_error():
+    from app.models import Event
+
+    e1 = Event.model_validate({
+        "type": "gas_alarm",
+        "state": "start",
+        "value": 1500.0,
+        "threshold": 1200.0,
+        "reason": "gas leakage detected",
+        "uptime_ms": 50000,
+    })
+    assert e1.type == "gas_alarm"
+
+    e2 = Event.model_validate({
+        "type": "gas_error",
+        "state": "start",
+        "reason": "sensor disconnected",
+        "uptime_ms": 51000,
+    })
+    assert e2.type == "gas_error"
