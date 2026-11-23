@@ -4,11 +4,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .models import CommandRequest, ScenarioRequest, Telemetry, Thresholds
+from .auth import AuthManager
+from .models import CommandRequest, LoginRequest, ScenarioRequest, Telemetry, Thresholds
 from .service import DeviceOffline, PublishFailed, SafetyOverride, Service, SimulatorNotActive
 
 log = logging.getLogger(__name__)
@@ -59,8 +60,17 @@ def _parse_time(value: Optional[str]) -> Optional[float]:
         raise HTTPException(422, f"invalid time: {value}")
 
 
-def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=None) -> FastAPI:
+def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=None,
+               auth: Optional[AuthManager] = None) -> FastAPI:
     hub = hub or WsHub()
+    auth = auth or AuthManager(service.settings, clock=lambda: service.clock())
+    if auth.config_error:
+        log.error("auth config error: %s", auth.config_error)
+
+    def need(min_role: str):
+        def dependency(authorization: Optional[str] = Header(None)):
+            return auth.require(authorization, min_role)
+        return Depends(dependency)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -75,6 +85,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
                        allow_headers=["*"])
     app.state.hub = hub
+    app.state.auth = auth
 
     async def storage_unavailable(request, exc):
         log.error("storage unavailable on %s: %s", request.url.path, exc)
@@ -82,6 +93,12 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
 
     for err_type in STORAGE_ERRORS:
         app.add_exception_handler(err_type, storage_unavailable)
+
+    @app.post("/api/auth/login")
+    def login(body: LoginRequest):
+        if not auth.configured:
+            raise HTTPException(503, "auth_not_configured")
+        return auth.login(body.username, body.password)
 
     @app.get("/api/state")
     def get_state():
@@ -187,7 +204,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
             raise HTTPException(404, "command not found")
         return cmd
 
-    @app.post("/api/devices/{device}/command")
+    @app.post("/api/devices/{device}/command", dependencies=[need("operator")])
     def send_command(device: str, body: CommandRequest):
         try:
             rec = service.send_command(device, body.action)
@@ -208,7 +225,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
     def get_config():
         return service.get_config()
 
-    @app.put("/api/config")
+    @app.put("/api/config", dependencies=[need("admin")])
     def put_config(thresholds: Thresholds):
         return service.set_config(thresholds)
 
@@ -216,7 +233,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
     def get_sim():
         return service.get_sim()
 
-    @app.post("/api/sim/scenario")
+    @app.post("/api/sim/scenario", dependencies=[need("operator")])
     def set_sim_scenario(body: ScenarioRequest):
         try:
             service.set_sim_scenario(body.scenario)

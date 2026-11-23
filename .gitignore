@@ -12,3 +12,6 @@ ESP32_DigitalTwin_BanGiao_Gas34_LED1.zip
 ESP32_DigitalTwin_KhongGas_LED1Toi/
 ESP32_DigitalTwin_KhongGas_LED1Toi.zip
 *.mp4
+
+# Bí mật / file sinh ra
+docker/secrets/

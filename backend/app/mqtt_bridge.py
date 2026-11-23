@@ -28,6 +28,8 @@ class MqttBridge:
             client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
                                  client_id=f"backend-{settings.device_id}")
         self.client = client
+        if settings.mqtt_username:
+            self.client.username_pw_set(settings.mqtt_username, settings.mqtt_password or None)
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
 

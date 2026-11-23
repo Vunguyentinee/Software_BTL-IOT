@@ -7,11 +7,12 @@ import {
   BackendHistoryStats,
   BackendSim,
 } from '../../types/api';
+import { authService } from './authService';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 class HttpClient {
-  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, options: RequestInit = {}, retried = false): Promise<T> {
     const url = `${API_BASE}${path}`;
     const headers: Record<string, string> = {
       ...((options.headers as Record<string, string>) || {}),
@@ -23,10 +24,24 @@ class HttpClient {
       headers['Content-Type'] = 'application/json';
     }
 
+    // Chỉ các yêu cầu thay đổi dữ liệu (điều khiển, cấu hình) mới cần JWT; GET để mở.
+    const method = (options.method || 'GET').toUpperCase();
+    const needsAuth = method !== 'GET' && method !== 'HEAD';
+    if (needsAuth) {
+      const token = await authService.getToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
+    }
+
     const res = await fetch(url, {
       ...options,
       headers,
     });
+
+    if (res.status === 401 && needsAuth && !retried) {
+      // Token hết hạn hoặc bị thu hồi: đăng nhập lại và thử lại đúng một lần
+      authService.invalidate();
+      return this.request<T>(path, options, true);
+    }
 
     if (!res.ok) {
       let errorMsg = `HTTP Error ${res.status}: ${res.statusText}`;
@@ -34,6 +49,8 @@ class HttpClient {
         const errorData = await res.json();
         if (errorData.detail) {
           errorMsg = typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail);
+          // Lệnh bị chặn an toàn: kèm lý do (ví dụ safety_override:heat_alarm)
+          if (typeof errorData.reason === 'string') errorMsg += `:${errorData.reason}`;
         }
       } catch {
         // bỏ qua nếu không phải JSON

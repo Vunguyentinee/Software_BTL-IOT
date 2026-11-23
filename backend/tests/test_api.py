@@ -4,12 +4,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import WsHub, create_app
-from tests.conftest import EXAMPLE
+from tests.conftest import EXAMPLE, authed_client
 
 
 @pytest.fixture
 def client(service):
-    return TestClient(create_app(service))
+    return authed_client(service, "admin")
 
 
 def test_state_endpoint_reflects_telemetry(client, service):

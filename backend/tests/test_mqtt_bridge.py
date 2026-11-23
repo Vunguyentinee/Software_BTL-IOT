@@ -13,6 +13,10 @@ class FakeClient:
         self.started = False
         self.connected = True
         self.publish_rc = 0
+        self.credentials = None
+
+    def username_pw_set(self, username, password=None):
+        self.credentials = (username, password)
 
     def is_connected(self):
         return self.connected
@@ -155,3 +159,15 @@ def test_bridge_reports_connection_state():
     assert b.is_connected() is True
     client.connected = False
     assert b.is_connected() is False
+
+
+def test_bridge_logs_in_with_configured_mqtt_account():
+    client = FakeClient()
+    MqttBridge(FakeService(), Settings(mqtt_username="backend", mqtt_password="s3cret-pass"), client=client)
+    assert client.credentials == ("backend", "s3cret-pass")
+
+
+def test_bridge_without_account_does_not_set_credentials():
+    client = FakeClient()
+    MqttBridge(FakeService(), Settings(), client=client)
+    assert client.credentials is None

@@ -21,7 +21,8 @@
 
 ## 2. Test tự động (pytest, không cần Docker)
 
-Chạy: `cd backend && .venv\Scripts\python -m pytest -q` → **231 passed, 47 skipped** (47 test PostgreSQL bị bỏ qua khi không đặt `BTL_TEST_DATABASE_URL`).
+Chạy: `cd backend && .venv\Scripts\python -m pytest -q` → **269 passed, 47 skipped** (47 test PostgreSQL bị bỏ qua khi không đặt `BTL_TEST_DATABASE_URL`).
+Có PostgreSQL thật (`docker run … postgres:16 -p 55432:5432`, đặt `BTL_TEST_DATABASE_URL`) → **316 passed, 0 skipped**. Frontend: `npx vitest run` → **83 passed**.
 
 | ID | Nội dung | Đầu vào | Mong đợi | Thực tế | Kết quả | Minh chứng |
 |---|---|---|---|---|---|---|
@@ -38,9 +39,50 @@ Chạy: `cd backend && .venv\Scripts\python -m pytest -q` → **231 passed, 47 s
 | REL-02 | DB ngừng | Storage ném `OperationalError` | History/commands/events trả **503** `storage_unavailable`; `/api/state` vẫn 200 | Đúng | PASS | `test_latency.py::test_history_reports_503_when_database_down` |
 | LAT-01 | Thống kê độ trễ | 2 lệnh ack 0.2/0.4 s, confirm 1.0/2.0 s | avg/P95/max đúng; rỗng → `null` (không phải 0) | Đúng | PASS | `test_latency.py` |
 | API-01 | API cũ không đổi | `/api/state`, `/api/history`, `/api/commands`, `/api/config` | Khóa/JSON như cũ | Đúng | PASS | `test_old_endpoints_unchanged` + 193 test cũ |
-| PG-01 | Cột `confirmed_ts` trên PostgreSQL | — | Lưu/đọc đúng | `CHƯA CHẠY` (Docker tắt) | **CHƯA CHẠY** | `test_postgres_storage.py::test_command_confirmed_ts_and_safety_failure_on_postgres` |
+| PG-01 | Cột `confirmed_ts` và lệnh bị Safety Override trên PostgreSQL | ACK ok → telemetry khớp; rồi `heat_alarm` + `fan off` | `confirmed_ts` lưu/đọc đúng; lệnh `failed` có `detail` `safety_override:heat_alarm` | Đúng | PASS (PostgreSQL 16 thật) | `test_postgres_storage.py::test_command_confirmed_ts_and_safety_failure_on_postgres` |
+
+### 2.1 Bảo mật — test tự động (`tests/test_auth.py`, `tests/test_mqtt_bridge.py`, `frontend/tests/authService.test.ts`)
+
+| ID | Nội dung | Mong đợi | Kết quả |
+|---|---|---|---|
+| SEC-01 | Lệnh không có token / token rác / sai scheme | 401, **không** publish MQTT, không ghi DB | PASS |
+| SEC-02 | `viewer` điều khiển | 403, không publish | PASS |
+| SEC-03 | `PUT /api/config` bởi operator | 403; chỉ admin được | PASS |
+| SEC-04 | Body sai kiểu / quá dài / JSON hỏng | 422 (kiểm tra auth trước body: không token → 401) | PASS |
+| SEC-05 | JWT hết hạn, bị sửa payload, ký khóa khác, `alg=none`, thiếu `exp`, user/role lạ | 401 | PASS |
+| SEC-06 | Hạ quyền user trong cấu hình | Token cũ mang claim `admin` của `viewer1` vẫn chỉ có quyền viewer (403) | PASS |
+| SEC-07 | Dò mật khẩu | 5 lần sai → 429 + Retry-After; hết 60 s thì đăng nhập lại được; user khác không bị ảnh hưởng; không lộ user nào tồn tại | PASS |
+| SEC-08 | Quá nhiều yêu cầu điều khiển | 429 + `Retry-After`, tính theo từng người dùng | PASS |
+| SEC-09 | Chưa cấu hình user / khóa JWT yếu | Điều khiển trả 503 `auth_not_configured`, không mở cửa; đọc vẫn dùng được | PASS |
+| SEC-10 | Định dạng `BTL_USERS` | Mật khẩu ngắn, role lạ, trùng tên, sai số trường → `ValueError` | PASS |
+| SEC-11 | `.env`, `docker/secrets/` nằm ngoài git | `git check-ignore` xác nhận | PASS |
+| SEC-12 | Bridge đăng nhập MQTT bằng tài khoản cấu hình | `username_pw_set` được gọi đúng | PASS |
+| SEC-13 | Frontend tự đăng nhập, gắn Bearer cho POST/PUT (GET không), gia hạn khi còn < 60 s, 401 thử lại đúng 1 lần, 403 báo nguyên văn | — | PASS |
+
+### 2.2 Bảo mật — kiểm chứng trên Docker thật
+
+Stack cô lập (`docker compose -p btlsec`, cổng 18831/18001/18301/18432, `.env` sinh bởi `make-env.ps1`, kèm simulator). Script: `backend/tools/live_security_check.py` → **25/25 PASS**.
+
+| ID | Nội dung | Kết quả thực tế | Kết quả |
+|---|---|---|---|
+| MQTT-01 | Client MQTT ẩn danh | `rc=Not authorized` | PASS |
+| MQTT-02 | Sai mật khẩu | `rc=Not authorized` | PASS |
+| MQTT-03/03b | Backend đăng nhập đúng; **đối chứng dương**: lệnh backend publish đến được `esp32` | Nhận được `home/esp32-home/cmd` | PASS |
+| MQTT-04 | `simulator` rồi `esp32` thử publish `cmd` và `config/set` giả (người chứng kiến có quyền đọc các topic này) | Không ai nhận được bản tin giả | PASS |
+| MQTT-05 | `esp32` publish `event` của chính nó, backend nhận được | Nhận được | PASS |
+| API-01..03 | Lệnh/đổi ngưỡng không token hoặc token rác | 401 | PASS |
+| API-04..06 | Đăng nhập sai 401; `ui` (operator) 200 + JWT; operator đổi ngưỡng 403 | Đúng | PASS |
+| API-07, 08 | Body sai kiểu / dài 10 000 ký tự | 422 | PASS |
+| API-09, CMD-01/02 | Operator gửi lệnh `led1 on` qua API → MQTT → simulator → ACK → telemetry | `status=ok`, có `confirmed_ts`; ack 7.4 ms, confirm 9.9 ms (**chỉ là số của simulator trên localhost, không phải ESP32 thật**) | PASS |
+| API-10 | `/api/health` | `mqtt.connected=true`, `storage.ok=true` | PASS |
+| LAT-01, REL-0x | `/api/metrics/latency` và 4 endpoint reliability | 200, có số liệu | PASS |
+| API-11 | 7 lần đăng nhập sai liên tiếp | `[401,401,401,401,401,429,429]` | PASS |
+| NET-01 | PostgreSQL chỉ mở cho máy chủ | `docker compose ps`: `127.0.0.1:18432->5432` | PASS |
+| WEB-01 | nginx sinh `config.js` và chuyển `/api/auth/login` | `uiUsername: "ui"`; đăng nhập sai qua nginx → 401 | PASS |
+
+**Chưa kiểm chứng:** ESP32 thật kết nối với tài khoản `esp32` (chưa có firmware WiFi/MQTT); trình duyệt thật tự đăng nhập (chỉ kiểm tra qua unit test và `config.js`); TLS (không triển khai).
 
 ## 3. Việc còn lại (chưa có kết quả)
 
-- Bảo mật API/MQTT (Task 4), đồng bộ simulator (Task 5), kiểm thử lỗi và hiệu năng trên Docker + ESP32 thật (Task 6).
+- Đồng bộ simulator (Task 5), kiểm thử lỗi và hiệu năng trên Docker + ESP32 thật (Task 6).
 - Đo độ trễ: **chỉ số liệu từ ESP32 thật mới dùng cho bài báo**; chưa có firmware WiFi/MQTT.

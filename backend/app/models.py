@@ -90,11 +90,16 @@ class Thresholds(BaseModel):
 
 
 class CommandRequest(BaseModel):
-    action: str
+    action: str = Field(max_length=32)
 
 
 class ScenarioRequest(BaseModel):
-    scenario: str
+    scenario: str = Field(max_length=64)
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
 
 
 def validate_command(device: str, action: str) -> None:

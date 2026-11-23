@@ -100,3 +100,19 @@ def test_service_and_simulator_end_to_end():
     assert svc.get_state()["telemetry"]["fan_on"] is True
     cfg = svc.set_config(__import__("app.models", fromlist=["Thresholds"]).Thresholds(fan_on=37))
     assert svc.get_config()["status"] == "applied"
+
+
+def test_simulator_credentials_helper_sets_login_only_when_given():
+    from simulator.fake_esp32 import apply_credentials
+
+    class C:
+        credentials = None
+
+        def username_pw_set(self, u, p=None):
+            self.credentials = (u, p)
+
+    c = C()
+    apply_credentials(c, "", "")
+    assert c.credentials is None
+    apply_credentials(c, "simulator", "pw-123456")
+    assert c.credentials == ("simulator", "pw-123456")

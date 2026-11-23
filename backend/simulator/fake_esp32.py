@@ -244,12 +244,24 @@ class FakeEsp32:
         self._ack("config/ack", {"config_id": config_id, "result": "ok"})
 
 
+def apply_credentials(client, username: str, password: str) -> None:
+    """Đăng nhập MQTT nếu broker yêu cầu tài khoản."""
+    if username:
+        client.username_pw_set(username, password or None)
+
+
 def main() -> None:
+    import os
+
     import paho.mqtt.client as mqtt
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=1883)
+    ap.add_argument("--username", default=os.environ.get("BTL_MQTT_USERNAME", ""),
+                    help="tài khoản MQTT (mặc định lấy từ biến BTL_MQTT_USERNAME)")
+    ap.add_argument("--password", default=os.environ.get("BTL_MQTT_PASSWORD", ""),
+                    help="mật khẩu MQTT (mặc định lấy từ biến BTL_MQTT_PASSWORD)")
     ap.add_argument("--device-id", default="esp32-home")
     ap.add_argument("--fail-door", action="store_true")
     ap.add_argument("--scenario", default="normal", choices=list(SCENARIOS),
@@ -260,6 +272,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="fake-" + a.device_id)
+    apply_credentials(client, a.username, a.password)
     sim = FakeEsp32(client, a.device_id, a.fail_door)
     sim._apply_scenario(a.scenario)
     status = sim.prefix + "status"

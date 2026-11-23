@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 
 from app.api import create_app
 from app.service import PublishFailed, SafetyOverride
-from tests.conftest import EXAMPLE
+from tests.conftest import EXAMPLE, authed_client
 
 
 def _tel(**over):
@@ -110,12 +110,12 @@ def test_telemetry_before_ack_is_not_confirmation(online_service, clock):
 
 @pytest.fixture
 def client(online_service):
-    return TestClient(create_app(online_service))
+    return authed_client(online_service, "operator")
 
 
 def test_api_safety_override_returns_409_with_reason(service):
     service.on_telemetry(_tel(heat_alarm=True))
-    c = TestClient(create_app(service))
+    c = authed_client(service, "operator")
     r = c.post("/api/devices/fan/command", json={"action": "off"})
     assert r.status_code == 409
     assert r.json() == {"detail": "safety_override", "reason": "heat_alarm"}
@@ -125,7 +125,7 @@ def test_api_publish_failure_returns_503(online_service, publisher):
     def boom(_payload):
         raise OSError("mqtt down")
     publisher.publish_cmd = boom
-    r = TestClient(create_app(online_service)).post("/api/devices/fan/command", json={"action": "on"})
+    r = authed_client(online_service, "operator").post("/api/devices/fan/command", json={"action": "on"})
     assert r.status_code == 503
     assert r.json()["detail"] == "mqtt_publish_failed"
 

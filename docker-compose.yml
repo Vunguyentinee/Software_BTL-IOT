@@ -1,13 +1,22 @@
+# Lần đầu: sinh .env có mật khẩu ngẫu nhiên:  powershell -ExecutionPolicy Bypass -File docker\make-env.ps1
+#                                            (Linux/macOS: sh docker/make-env.sh)
 # Chạy cả hệ thống:  docker compose up -d --build
 # Kèm ESP32 giả lập:  docker compose --profile sim up -d --build
 services:
   mosquitto:
     image: eclipse-mosquitto:2
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/mosquitto-entrypoint.sh"]
+    environment:
+      MQTT_BACKEND_PASSWORD: ${MQTT_BACKEND_PASSWORD:?Chưa có .env - chạy docker/make-env.ps1}
+      MQTT_DEVICE_PASSWORD: ${MQTT_DEVICE_PASSWORD:?Chưa có .env - chạy docker/make-env.ps1}
+      MQTT_SIM_PASSWORD: ${MQTT_SIM_PASSWORD:?Chưa có .env - chạy docker/make-env.ps1}
     ports:
       - "${MQTT_PORT:-1883}:1883"
     volumes:
       - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./docker/mosquitto.acl:/mosquitto/config/acl:ro
+      - ./docker/mosquitto-entrypoint.sh:/mosquitto-entrypoint.sh:ro
       - mosquitto-data:/mosquitto/data
 
   db:
@@ -18,7 +27,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smarthome}
       POSTGRES_DB: ${POSTGRES_DB:-smarthome}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      # Chỉ mở cho chính máy chạy Docker (DBeaver/psql trên máy này); máy khác trong mạng không vào được.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -33,7 +43,11 @@ services:
     environment:
       BTL_MQTT_HOST: mosquitto
       BTL_MQTT_PORT: "1883"
+      BTL_MQTT_USERNAME: backend
+      BTL_MQTT_PASSWORD: ${MQTT_BACKEND_PASSWORD:?Chưa có .env - chạy docker/make-env.ps1}
       BTL_DATABASE_URL: postgresql://${POSTGRES_USER:-smarthome}:${POSTGRES_PASSWORD:-smarthome}@db:5432/${POSTGRES_DB:-smarthome}
+      BTL_USERS: ${BTL_USERS:?Chưa có .env - chạy docker/make-env.ps1}
+      BTL_JWT_SECRET: ${BTL_JWT_SECRET:?Chưa có .env - chạy docker/make-env.ps1}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -45,6 +59,10 @@ services:
   frontend:
     build: ./frontend
     restart: unless-stopped
+    environment:
+      # Tài khoản vai trò operator để giao diện tự đăng nhập (xem frontend/README.md về giới hạn)
+      UI_USERNAME: ${UI_USERNAME:-ui}
+      UI_PASSWORD: ${UI_PASSWORD:?Chưa có .env - chạy docker/make-env.ps1}
     ports:
       - "${WEB_PORT:-3000}:80"
     depends_on:
@@ -54,6 +72,9 @@ services:
     profiles: ["sim"]
     build: ./backend
     restart: unless-stopped
+    environment:
+      BTL_MQTT_USERNAME: simulator
+      BTL_MQTT_PASSWORD: ${MQTT_SIM_PASSWORD:?Chưa có .env - chạy docker/make-env.ps1}
     command: ["python", "-m", "simulator.fake_esp32", "--host", "mosquitto"]
     depends_on:
       - mosquitto

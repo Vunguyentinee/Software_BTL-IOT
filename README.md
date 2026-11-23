@@ -25,9 +25,16 @@ Không cần cài Python, PostgreSQL hay Mosquitto riêng.
 Mở PowerShell trong thư mục gốc của dự án (nơi có `docker-compose.yml`):
 
 ```powershell
+# Lần đầu duy nhất: sinh file .env chứa mật khẩu/khóa ngẫu nhiên (KHÔNG commit file này)
+powershell -ExecutionPolicy Bypass -File docker\make-env.ps1     # Linux/macOS: sh docker/make-env.sh
+
 docker compose up -d --build        # chạy cả hệ thống (lần đầu mất vài phút để tải)
 docker compose ps                   # kiểm tra: backend, db, mosquitto, frontend đều "Up"
 ```
+
+Không có `.env` thì `docker compose` dừng ngay và báo thiếu biến: đây là chủ đích, hệ thống **không** chạy với mật khẩu mặc định.
+Tài khoản đăng nhập API: `admin` (mật khẩu là `ADMIN_PASSWORD` trong `.env`) có đủ quyền; giao diện web tự đăng nhập bằng tài khoản `ui` (vai trò `operator`).
+Chi tiết bảo mật (JWT, vai trò, tài khoản MQTT, ACL) xem [backend/docs/SECURITY.md](backend/docs/SECURITY.md).
 
 Kiểm tra: mở **http://localhost:3000** (giao diện). API và tài liệu API: http://localhost:8000/docs.
 
@@ -47,13 +54,13 @@ docker compose down -v     # CẢNH BÁO: xóa luôn toàn bộ dữ liệu data
 docker compose logs -f backend   # xem log backend
 ```
 
-Đổi mật khẩu hoặc cổng (không bắt buộc): sao chép `.env.example` thành `.env` rồi sửa.
+Đổi cổng hoặc mật khẩu: sửa trực tiếp trong `.env` rồi `docker compose up -d` (đổi mật khẩu PostgreSQL sau khi đã có dữ liệu thì cần `docker compose down -v`).
 
 ## 3. Cho từng vai trò
 
 ### ESP32 (Người 2, 3)
 - Kết nối cùng WiFi với máy chủ demo. Lấy IP máy chủ bằng `ipconfig` (dòng *IPv4 Address* của WiFi, ví dụ `192.168.1.20`).
-- Firmware kết nối MQTT tới `<IP máy chủ>:1883`, không cần tài khoản. Topic và định dạng JSON ở [backend/docs/API_MQTT.md](backend/docs/API_MQTT.md).
+- Firmware kết nối MQTT tới `<IP máy chủ>:1883` với tài khoản **`esp32`** và mật khẩu `MQTT_DEVICE_PASSWORD` trong `.env` (xin Người 4). Không có tài khoản thì broker từ chối kết nối. ESP32 chỉ được ghi `telemetry`, `event`, `cmd/ack`, `config/ack`, `status` và đọc `cmd`, `config/set`. Topic và định dạng JSON ở [backend/docs/API_MQTT.md](backend/docs/API_MQTT.md).
 - Nếu ESP32 không kết nối được, xem mục 5 (Tường lửa).
 
 ### Website và Digital Twin (Người 6, 7)
@@ -65,7 +72,7 @@ docker compose logs -f backend   # xem log backend
 - Chưa có phần cứng: chạy `docker compose --profile sim up -d` để có dữ liệu giả. Ô **Kịch bản** ở đầu trang khi đó điều khiển ESP32 giả lập (khói/cháy, nhiệt độ cao, mất kết nối...); danh sách kịch bản ở `backend/docs/API_MQTT.md` mục 6.
 
 ### Cơ sở dữ liệu (Người 5)
-- PostgreSQL chạy ở `<IP máy chủ>:5432`, database `smarthome`, user `smarthome`, mật khẩu `smarthome` (mặc định, đổi trong `.env`).
+- PostgreSQL chỉ mở cho **chính máy chạy Docker**: kết nối bằng `localhost:5432`, database `smarthome`, user `smarthome`, mật khẩu `smarthome` (mặc định, đổi trong `.env`). Máy khác trong mạng không vào được cổng này (chủ đích, xem SECURITY.md).
 - Kết nối bằng DBeaver, pgAdmin hoặc `docker compose exec db psql -U smarthome -d smarthome`.
 - Bảng: `telemetry` (số đo), `events` (cảnh báo/sự kiện), `commands` (lệnh điều khiển), `config` (ngưỡng). Bảng tự tạo khi backend khởi động, định nghĩa ở `backend/app/pg_storage.py`.
 - Muốn đổi cấu trúc bảng hay thêm truy vấn (trung bình/min/max, CSV): sửa `backend/app/pg_storage.py` (giao diện `Storage` ở `backend/app/storage.py`), rồi chạy lại `docker compose up -d --build backend`.
