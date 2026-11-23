@@ -68,8 +68,18 @@ class MqttBridge:
             log.exception("error handling %s", topic)
 
     # ---- Publisher -----------------------------------------------------
+    def is_connected(self) -> bool:
+        return bool(self.client.is_connected())
+
     def publish_cmd(self, payload: dict) -> None:
-        self.client.publish(self.prefix + "cmd", json.dumps(payload), qos=1, retain=False)
+        # Lệnh không được xếp hàng khi mất kết nối: paho (QoS 1) sẽ gửi lại sau khi nối lại,
+        # khiến lệnh cũ bị thực thi muộn ngoài ý muốn. Báo lỗi ngay để backend đánh dấu `failed`.
+        if not self.is_connected():
+            raise ConnectionError("mqtt_not_connected")
+        info = self.client.publish(self.prefix + "cmd", json.dumps(payload), qos=1, retain=False)
+        rc = getattr(info, "rc", 0)
+        if rc != 0:
+            raise ConnectionError(f"mqtt_publish_rc_{rc}")
 
     def publish_config(self, payload: dict) -> None:
         self.client.publish(self.prefix + "config/set", json.dumps(payload), qos=1, retain=True)

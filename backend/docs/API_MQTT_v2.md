@@ -122,6 +122,7 @@ Backend dùng `(device_id, boot_id, seq)` để phát hiện **trùng** (bỏ qu
 | `GET /api/history/connections` | đọc | Lịch sử mất/khôi phục kết nối |
 | `GET /api/history/errors` | đọc | Sự kiện lỗi (gas, DHT…) |
 | `GET /api/metrics/latency` | đọc | avg/P95/max của gửi→ACK, gửi→xác nhận |
+| `GET /api/health` | đọc | `mqtt.connected`, `storage.ok/errors/last_error_ts`, `device_online` — lỗi hạ tầng được công bố |
 | Điều khiển (`POST /api/devices/*/command`, `POST /api/sim/scenario`) | `operator` | cần JWT |
 | `PUT /api/config` | `admin` | cần JWT |
 

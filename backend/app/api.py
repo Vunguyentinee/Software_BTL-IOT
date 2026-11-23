@@ -13,6 +13,13 @@ from .service import DeviceOffline, PublishFailed, SafetyOverride, Service, Simu
 
 log = logging.getLogger(__name__)
 
+try:  # lỗi hạ tầng lưu trữ (PostgreSQL ngừng, hết pool...) -> 503, không che giấu bằng 200 rỗng
+    import psycopg
+    import psycopg_pool
+    STORAGE_ERRORS: tuple = (psycopg.Error, psycopg_pool.PoolTimeout, psycopg_pool.PoolClosed)
+except ImportError:  # pragma: no cover
+    STORAGE_ERRORS = ()
+
 METRICS = {
     name for name, f in Telemetry.model_fields.items()
     if name not in ("modes", "door_command", "device_id", "boot_id", "seq", "safety_mode", "safety_reason")
@@ -69,9 +76,20 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
                        allow_headers=["*"])
     app.state.hub = hub
 
+    async def storage_unavailable(request, exc):
+        log.error("storage unavailable on %s: %s", request.url.path, exc)
+        return JSONResponse({"detail": "storage_unavailable"}, status_code=503)
+
+    for err_type in STORAGE_ERRORS:
+        app.add_exception_handler(err_type, storage_unavailable)
+
     @app.get("/api/state")
     def get_state():
         return service.get_state()
+
+    @app.get("/api/health")
+    def health():
+        return service.health()
 
     @app.get("/api/history")
     def history(metric: str, from_: Optional[str] = Query(None, alias="from"),
@@ -116,6 +134,43 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
         return StreamingResponse(
             chunks, media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{metric}.csv"'})
+
+    @app.get("/api/history/reliability")
+    def history_reliability(device_id: Optional[str] = None,
+                            from_: Optional[str] = Query(None, alias="from"),
+                            to: Optional[str] = None):
+        start, end = _history_range(from_, to)
+        try:
+            return service.storage.reliability_stats(device_id, start, end)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.get("/api/history/commands/stats")
+    def history_command_stats(from_: Optional[str] = Query(None, alias="from"),
+                              to: Optional[str] = None):
+        start, end = _history_range(from_, to)
+        try:
+            return service.storage.command_stats(start, end)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.get("/api/history/connections")
+    def history_connections(limit: int = Query(100, ge=1, le=1000),
+                            from_: Optional[str] = Query(None, alias="from"),
+                            to: Optional[str] = None):
+        start, end = _history_range(from_, to)
+        return service.storage.list_connection_events(limit, start, end)
+
+    @app.get("/api/history/errors")
+    def history_errors(limit: int = Query(100, ge=1, le=1000),
+                       from_: Optional[str] = Query(None, alias="from"),
+                       to: Optional[str] = None):
+        start, end = _history_range(from_, to)
+        return service.storage.list_error_events(limit, start, end)
+
+    @app.get("/api/metrics/latency")
+    def metrics_latency():
+        return service.latency_stats()
 
     @app.get("/api/events")
     def events(limit: int = Query(100, ge=1, le=1000)):

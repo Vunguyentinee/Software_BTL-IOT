@@ -29,6 +29,9 @@ class _LatePublisher:
     def publish_cmd(self, payload):
         self.target.publish_cmd(payload)
 
+    def is_connected(self):
+        return self.target is not None and self.target.is_connected()
+
     def publish_config(self, payload):
         self.target.publish_config(payload)
 

@@ -1,5 +1,7 @@
 import json
 import logging
+import math
+from collections import deque
 import threading
 import time
 import uuid
@@ -49,6 +51,22 @@ CONFIRM_WAIT_S = 30.0  # quá lâu không thấy telemetry khớp thì thôi ch�
 SIM_TIMEOUT_S = 15.0  # quá lâu không có nhịp tim từ simulator thì coi như đã dừng
 
 
+def percentile(values: list[float], p: float) -> Optional[float]:
+    """Phân vị theo phương pháp nearest-rank (p trong 0..100). Rỗng -> None."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, math.ceil(p / 100.0 * len(ordered)))
+    return ordered[rank - 1]
+
+
+def _summary(values: list[float]) -> dict:
+    if not values:
+        return {"count": 0, "avg": None, "p95": None, "max": None}
+    return {"count": len(values), "avg": sum(values) / len(values),
+            "p95": percentile(values, 95), "max": max(values)}
+
+
 def _to_dict(payload) -> dict:
     if isinstance(payload, dict):
         return payload
@@ -77,6 +95,10 @@ class Service:
         self._sim_ts: Optional[float] = None
         self._sim_emitted: Optional[dict] = None
         self._real_device_last_seen: Optional[float] = None
+        self._storage_errors = 0
+        self._storage_last_error_ts: Optional[float] = None
+        self._storage_ok = True
+        self._rx_intervals: deque = deque(maxlen=1000)  # giây giữa 2 telemetry liên tiếp
         self._awaiting_confirm: dict[str, dict] = {}  # cmd_id -> lệnh `ok` chờ telemetry khớp
 
     # ---- helpers -------------------------------------------------------
@@ -134,8 +156,12 @@ class Service:
             stored: Optional[bool] = None
             try:
                 stored = self.storage.save_telemetry(rec)
+                self._storage_ok = True
             except Exception as ex:
                 log.error("failed to save telemetry to storage: %s", ex)
+                self._storage_ok = False
+                self._storage_errors += 1
+                self._storage_last_error_ts = now
                 stored = None
 
             if stored is False:
@@ -152,6 +178,8 @@ class Service:
 
             if not is_out_of_order:
                 self._telemetry = rec
+            if self._online and self._last_seen is not None and now >= self._last_seen:
+                self._rx_intervals.append(now - self._last_seen)
             self._last_seen = now
             self._set_online(True, reason="telemetry")
             self._emit("telemetry", rec)
@@ -186,6 +214,19 @@ class Service:
                 self._set_online(True, reason="status")
 
     # ---- state / time --------------------------------------------------
+    def health(self) -> dict:
+        """Tình trạng hạ tầng. Lỗi MQTT/DB được công bố, không bị che giấu."""
+        with self._lock:
+            probe = getattr(self.publisher, "is_connected", None)
+            try:
+                mqtt_connected = bool(probe()) if callable(probe) else None
+            except Exception:
+                mqtt_connected = False
+            return {"mqtt": {"connected": mqtt_connected},
+                    "storage": {"ok": self._storage_ok, "errors": self._storage_errors,
+                                "last_error_ts": self._storage_last_error_ts},
+                    "device_online": self._online}
+
     def get_state(self) -> dict:
         with self._lock:
             return {"online": self._online, "last_seen": self._last_seen,
@@ -259,6 +300,9 @@ class Service:
         self._emit("command", rec)
         if status == "ok" and rec is not None:
             self._awaiting_confirm[cmd_id] = rec
+        if rec is not None and rec.get("ack_ts") is not None:
+            log.info("latency cmd_id=%s device=%s action=%s status=%s ack_ms=%.1f", cmd_id,
+                     rec["device"], rec["action"], status, (rec["ack_ts"] - rec["sent_ts"]) * 1000)
         return rec
 
     def on_cmd_ack(self, payload) -> bool:
@@ -293,6 +337,7 @@ class Service:
             if tel.get(spec[0]) == spec[1][cmd["action"]]:
                 rec = self.storage.update_command(cmd_id, confirmed_ts=now)
                 del self._awaiting_confirm[cmd_id]
+                log.info("latency cmd_id=%s confirm_ms=%.1f", cmd_id, (now - cmd["sent_ts"]) * 1000)
                 if rec is not None:
                     self._emit("command", rec)
 
@@ -300,6 +345,21 @@ class Service:
         for c in self.storage.list_commands(1000):
             if c["status"] == "pending" and now - c["sent_ts"] > self.settings.cmd_timeout_s:
                 self._finish_command(c["cmd_id"], "timeout", "no ack from device")
+
+    def latency_stats(self, limit: int = 1000) -> dict:
+        """avg/P95/max (giây) của gửi->ACK và gửi->xác nhận (từ lệnh đã lưu), và khoảng cách telemetry."""
+        ack, confirm = [], []
+        for c in self.storage.list_commands(limit):
+            if c.get("status") != "ok":
+                continue
+            if c.get("ack_ts") is not None:
+                ack.append(c["ack_ts"] - c["sent_ts"])
+            if c.get("confirmed_ts") is not None:
+                confirm.append(c["confirmed_ts"] - c["sent_ts"])
+        with self._lock:
+            intervals = list(self._rx_intervals)
+        return {"ack": _summary(ack), "confirm": _summary(confirm),
+                "telemetry_interval": _summary(intervals)}
 
     # ---- config --------------------------------------------------------
     def _initial_config(self) -> dict:

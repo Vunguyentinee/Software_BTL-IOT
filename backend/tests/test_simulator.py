@@ -75,6 +75,9 @@ def test_service_and_simulator_end_to_end():
     holder = {}
 
     class ToSim:  # backend -> ESP32
+        def is_connected(self):
+            return True
+
         def publish(self, topic, payload=None, qos=0, retain=False):
             holder["sim"].handle_message(topic, payload.encode())
 

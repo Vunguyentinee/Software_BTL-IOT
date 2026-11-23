@@ -11,9 +11,15 @@ class FakeClient:
         self.on_connect = None
         self.on_message = None
         self.started = False
+        self.connected = True
+        self.publish_rc = 0
+
+    def is_connected(self):
+        return self.connected
 
     def publish(self, topic, payload=None, qos=0, retain=False):
         self.published.append((topic, payload, qos, retain))
+        return type("Info", (), {"rc": self.publish_rc})()
 
     def subscribe(self, topic, qos=0):
         self.subscribed.append(topic)
@@ -120,3 +126,32 @@ def test_publish_sim_scenario_not_retained_on_sim_topic():
     topic, payload, qos, retain = c.published[0]
     assert topic == P + "sim/scenario" and qos == 1 and retain is False
     assert '"smoke_danger"' in payload
+
+
+class _Info:
+    def __init__(self, rc):
+        self.rc = rc
+
+
+def test_publish_cmd_refused_when_mqtt_disconnected():
+    import pytest
+    b, _svc, client = make()
+    client.connected = False
+    with pytest.raises(ConnectionError):
+        b.publish_cmd({"cmd_id": "c"})
+    assert client.published == []   # không xếp hàng để gửi muộn sau khi nối lại
+
+
+def test_publish_cmd_raises_when_paho_returns_error_code():
+    import pytest
+    b, _svc, client = make()
+    client.publish_rc = 4   # MQTT_ERR_NO_CONN
+    with pytest.raises(ConnectionError):
+        b.publish_cmd({"cmd_id": "c"})
+
+
+def test_bridge_reports_connection_state():
+    b, _svc, client = make()
+    assert b.is_connected() is True
+    client.connected = False
+    assert b.is_connected() is False
