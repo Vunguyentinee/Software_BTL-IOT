@@ -146,7 +146,10 @@ class Service:
             return False
         with self._lock:
             rec = dict(e.model_dump(), ts=self.clock())
-            self.storage.save_event(rec)
+            try:
+                self.storage.save_event(rec)
+            except Exception as ex:
+                log.error("failed to save event to storage: %s", ex)
             self._emit("event", rec)
         return True
 

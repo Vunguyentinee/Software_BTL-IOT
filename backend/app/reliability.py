@@ -1,6 +1,6 @@
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -12,41 +12,62 @@ class IngestResult:
     is_out_of_order: bool
     is_gap: bool
     missing_seqs: list[int] = field(default_factory=list)
+    gap_count: int = 0
+    prev_max_seq: Optional[int] = None
+    created_gap_interval: Optional[tuple[int, int]] = None
+    resolved_gap_seq: Optional[int] = None
 
 
 class ReliabilityTracker:
     """Theo dõi độ tin cậy telemetry: duplicate, out-of-order, sequence gaps.
 
-    Đặc tính kỹ thuật:
-    - Thread-safe: Toàn bộ thao tác cập nhật và đọc chỉ số được bảo vệ bằng RLock.
-    - Giới hạn bộ nhớ (Bounded Memory):
+    Đặc tính kỹ thuật & Khả năng chịu lỗi:
+    - Thread-safe: Toàn bộ thao tác cập nhật và đọc chỉ số được bảo vệ bằng threading.RLock.
+    - Chống OOM khi Sequence Gap cực lớn (Large Gap Protection):
+      + Quản lý pending gaps theo cấu trúc khoảng (interval-based: start_seq..end_seq).
+      + Khi seq nhảy đột biến (ví dụ 50,000 hay 100,000,000), bộ nhớ chỉ tiêu tốn O(1)
+        thay vì cấp phát mảng hàng triệu phần tử.
+      + Không làm sai lệch số lượng missing packets và bảo toàn khả năng đối soát late-arrival.
+    - Giới hạn bộ nhớ Bounded Memory:
       + Sliding window giới hạn W sequences gần nhất cho mỗi session.
-      + Giới hạn tối đa MAX_GAP_EVENTS sự kiện gap trong RAM.
-      + Tự động dọn dẹp pending gaps quá hạn, chuyển sang bộ đếm tích lũy unresolved_gaps_beyond_window.
-    - Cửa sổ quan sát (Observation Window):
-      + Gap mới phát hiện được xếp vào missing_packets_pending.
-      + Sau late_window_s nếu chưa được bù đắp sẽ phân loại thành unresolved_gaps_beyond_window.
-      + Không gọi là mất gói vĩnh viễn (permanently lost) vì gói tin đến muộn (late arrival)
-        vẫn được ghi nhận và đối soát chính xác.
+      + Giới hạn tối đa MAX_GAP_EVENTS sự kiện gap trong RAM (Ring Buffer).
+      + Giới hạn tối đa MAX_SESSIONS phiên hoạt động gần nhất (LRU eviction cho session cũ).
+      + Tự động dọn dẹp các gap intervals quá hạn, chuyển sang bộ đếm tích lũy unresolved_gaps_beyond_window.
     - Nhất quán sau restart:
       + Phối hợp với PostgreSQL partial unique index để phân biệt chính xác giữa duplicate cũ
-        và out-of-order, không đếm đúp.
-      + Cho phép hoàn lại trạng thái (revert) nếu transaction lưu database thất bại.
+        và out-of-order.
+      + Xử lý chính xác trường hợp seq == max_seq sau restart mà không tạo gap event rác.
+      + Ngữ nghĩa revert_incoming nguyên tử: giữ nguyên received_count (vì bản tin đã nhận thật),
+        hoàn lại max_seq, gap intervals và seen_seq nếu thao tác ghi DB thất bại.
+    - Tách biệt phạm vi thống kê theo device_id:
+      + Quản lý counters riêng biệt cho từng device_id.
+      + Phân biệt rõ ràng giữa Runtime Counters (vòng đời process hiện tại) và Persisted Count (lưu bền DB).
     """
 
     def __init__(self, late_window_s: float = 10.0, max_seen_history: int = 5000,
-                 max_gap_events: int = 1000, max_pending_gaps: int = 5000):
+                 max_gap_events: int = 1000, max_pending_gap_intervals: int = 2000,
+                 max_sessions: int = 500, max_pending_gaps: Optional[int] = None):
         self.late_window_s = late_window_s
         self.max_seen_history = max_seen_history
         self.max_gap_events = max_gap_events
-        self.max_pending_gaps = max_pending_gaps
+        self.max_pending_gap_intervals = max_pending_gaps if max_pending_gaps is not None else max_pending_gap_intervals
+        self.max_sessions = max_sessions
 
         self._lock = threading.RLock()
+
+        # Toàn cục
         self._received_count: int = 0
         self._duplicate_count: int = 0
         self._out_of_order_count: int = 0
         self._unresolved_beyond_window_count: int = 0
         self._total_gap_events_count: int = 0
+
+        # Phân theo device_id
+        self._received_by_device: dict[Optional[str], int] = defaultdict(int)
+        self._duplicate_by_device: dict[Optional[str], int] = defaultdict(int)
+        self._out_of_order_by_device: dict[Optional[str], int] = defaultdict(int)
+        self._gap_events_count_by_device: dict[Optional[str], int] = defaultdict(int)
+        self._unresolved_beyond_window_by_device: dict[Optional[str], int] = defaultdict(int)
 
         # (device_id, boot_id) -> max sequence number seen so far
         self._session_max_seq: dict[tuple[Optional[str], Optional[str]], int] = {}
@@ -54,10 +75,30 @@ class ReliabilityTracker:
         self._session_seen_seqs: dict[tuple[Optional[str], Optional[str]], set[int]] = {}
         # (device_id, boot_id) -> deque of seen sequence numbers for FIFO eviction
         self._session_seen_deque: dict[tuple[Optional[str], Optional[str]], deque[int]] = {}
-        # (device_id, boot_id, missing_seq) -> timestamp detected
-        self._pending_gaps: dict[tuple[Optional[str], Optional[str], int], float] = {}
+        # (device_id, boot_id) -> timestamp hoạt động gần nhất
+        self._session_last_active: dict[tuple[Optional[str], Optional[str]], float] = {}
+
+        # Danh sách pending gap intervals: mỗi phần tử là dict:
+        # {"device_id": ..., "boot_id": ..., "start_seq": ..., "end_seq": ..., "detected_at": ...}
+        self._pending_gap_intervals: list[dict] = []
+
         # Danh sách sự kiện gap giới hạn trần (ring buffer)
         self._gap_events: deque = deque(maxlen=max_gap_events)
+
+    @property
+    def _pending_gaps(self) -> dict:
+        """Alias tương thích ngược cho các test/caller cần tra cứu gap mapping."""
+        with self._lock:
+            res = {}
+            for interval in self._pending_gap_intervals:
+                dev = interval["device_id"]
+                boot = interval["boot_id"]
+                det = interval["detected_at"]
+                # Cắt trần an toàn để không tốn RAM nếu gap cực lớn
+                end = min(interval["end_seq"], interval["start_seq"] + 500)
+                for s in range(interval["start_seq"], end + 1):
+                    res[(dev, boot, s)] = det
+            return res
 
     def init_session(self, device_id: Optional[str], boot_id: Optional[str],
                      max_seq: Optional[int]) -> None:
@@ -66,9 +107,23 @@ class ReliabilityTracker:
             key = (device_id, boot_id)
             if max_seq is not None:
                 self._session_max_seq[key] = max_seq
+                self._session_last_active[key] = time.time()
 
-    def _mark_seen(self, key: tuple[Optional[str], Optional[str]], seq: int) -> None:
+    def _evict_oldest_session_if_needed(self) -> None:
+        """Giới hạn số lượng session theo dõi trong RAM (LRU eviction)."""
+        if len(self._session_last_active) <= self.max_sessions:
+            return
+        oldest_key = min(self._session_last_active.keys(), key=lambda k: self._session_last_active[k])
+        self._session_last_active.pop(oldest_key, None)
+        self._session_max_seq.pop(oldest_key, None)
+        self._session_seen_seqs.pop(oldest_key, None)
+        self._session_seen_deque.pop(oldest_key, None)
+
+    def _mark_seen(self, key: tuple[Optional[str], Optional[str]], seq: int, now: float) -> None:
         """Thêm sequence vào sliding window có giới hạn dung lượng."""
+        self._session_last_active[key] = now
+        self._evict_oldest_session_if_needed()
+
         seen_set = self._session_seen_seqs.setdefault(key, set())
         seen_deq = self._session_seen_deque.setdefault(key, deque())
 
@@ -80,27 +135,64 @@ class ReliabilityTracker:
                 seen_set.discard(oldest)
 
     def _cleanup_pending_gaps_if_needed(self, now: float) -> None:
-        """Thu gom các gap quá hạn nếu số lượng pending gaps vượt ngưỡng an toàn."""
-        if len(self._pending_gaps) <= self.max_pending_gaps:
+        """Thu gom các gap intervals quá hạn nếu số lượng intervals vượt ngưỡng an toàn."""
+        if len(self._pending_gap_intervals) <= self.max_pending_gap_intervals:
             return
 
-        to_evict = []
-        for gap_key, det_time in self._pending_gaps.items():
-            if now - det_time > self.late_window_s:
-                to_evict.append(gap_key)
-                if len(self._pending_gaps) - len(to_evict) <= self.max_pending_gaps:
-                    break
+        retained: list[dict] = []
+        for interval in self._pending_gap_intervals:
+            if now - interval["detected_at"] > self.late_window_s:
+                missing_count = interval["end_seq"] - interval["start_seq"] + 1
+                dev = interval.get("device_id")
+                self._unresolved_beyond_window_count += missing_count
+                self._unresolved_beyond_window_by_device[dev] += missing_count
+            else:
+                retained.append(interval)
 
-        for k in to_evict:
-            del self._pending_gaps[k]
-            self._unresolved_beyond_window_count += 1
+        self._pending_gap_intervals = retained
+
+    def _resolve_gap_interval(self, device_id: Optional[str], boot_id: Optional[str],
+                              seq: int) -> bool:
+        """Kiểm tra và bù đắp một sequence đến muộn vào pending gap intervals.
+
+        Trả về True nếu gói tin này đã bù đắp thành công một gap interval.
+        """
+        for i, interval in enumerate(self._pending_gap_intervals):
+            if interval["device_id"] == device_id and interval["boot_id"] == boot_id:
+                start_seq = interval["start_seq"]
+                end_seq = interval["end_seq"]
+                if start_seq <= seq <= end_seq:
+                    if start_seq == end_seq:
+                        # Gap đúng 1 gói: xóa bỏ interval
+                        self._pending_gap_intervals.pop(i)
+                    elif seq == start_seq:
+                        # Thu hẹp đầu khoảng
+                        interval["start_seq"] = seq + 1
+                    elif seq == end_seq:
+                        # Thu hẹp cuối khoảng
+                        interval["end_seq"] = seq - 1
+                    else:
+                        # Tách interval thành 2 khoảng: [start, seq-1] và [seq+1, end]
+                        det_at = interval["detected_at"]
+                        interval["end_seq"] = seq - 1
+                        new_interval = {
+                            "device_id": device_id,
+                            "boot_id": boot_id,
+                            "start_seq": seq + 1,
+                            "end_seq": end_seq,
+                            "detected_at": det_at,
+                        }
+                        self._pending_gap_intervals.append(new_interval)
+                    return True
+        return False
 
     def record_incoming(self, device_id: Optional[str], boot_id: Optional[str],
                         seq: Optional[int], now: Optional[float] = None) -> IngestResult:
         """Phân tích bản tin telemetry trước khi lưu vào database."""
         with self._lock:
-            self._received_count += 1
             current_time = time.time() if now is None else now
+            self._received_count += 1
+            self._received_by_device[device_id] += 1
 
             # Legacy data: không có boot_id hoặc seq -> coi là hợp lệ, không phân tích seq
             if boot_id is None or seq is None:
@@ -117,6 +209,7 @@ class ReliabilityTracker:
             # 1. Duplicate detection trong sliding window RAM
             if seq in seen:
                 self._duplicate_count += 1
+                self._duplicate_by_device[device_id] += 1
                 return IngestResult(
                     stored=False,
                     is_duplicate=True,
@@ -124,10 +217,23 @@ class ReliabilityTracker:
                     is_gap=False,
                 )
 
-            self._mark_seen(key, seq)
-
-            # 2. Sequence order & gap analysis
             max_seq = self._session_max_seq.get(key)
+
+            # 2. Xử lý trường hợp seq == max_seq khi vừa restart (seen còn rỗng)
+            if max_seq is not None and seq == max_seq:
+                self._duplicate_count += 1
+                self._duplicate_by_device[device_id] += 1
+                self._mark_seen(key, seq, current_time)
+                return IngestResult(
+                    stored=False,
+                    is_duplicate=True,
+                    is_out_of_order=False,
+                    is_gap=False,
+                )
+
+            self._mark_seen(key, seq, current_time)
+
+            # 3. Sequence order & gap analysis
             if max_seq is None:
                 # Gói đầu tiên quan sát được của session
                 self._session_max_seq[key] = seq
@@ -136,20 +242,21 @@ class ReliabilityTracker:
                     is_duplicate=False,
                     is_out_of_order=False,
                     is_gap=False,
+                    prev_max_seq=None,
                 )
 
             if seq < max_seq:
                 # OUT-OF-ORDER (Late arrival)
                 self._out_of_order_count += 1
-                gap_key = (device_id, boot_id, seq)
-                if gap_key in self._pending_gaps:
-                    # Gói đến muộn đã bù đắp gap thành công!
-                    del self._pending_gaps[gap_key]
+                self._out_of_order_by_device[device_id] += 1
+                resolved = self._resolve_gap_interval(device_id, boot_id, seq)
                 return IngestResult(
                     stored=True,
                     is_duplicate=False,
                     is_out_of_order=True,
                     is_gap=False,
+                    resolved_gap_seq=seq if resolved else None,
+                    prev_max_seq=max_seq,
                 )
 
             if seq == max_seq + 1:
@@ -160,33 +267,49 @@ class ReliabilityTracker:
                     is_duplicate=False,
                     is_out_of_order=False,
                     is_gap=False,
+                    prev_max_seq=max_seq,
                 )
 
-            # seq > max_seq + 1: PHÁT HIỆN GAP MỚI
-            missing = list(range(max_seq + 1, seq))
-            for m in missing:
-                self._pending_gaps[(device_id, boot_id, m)] = current_time
+            # seq > max_seq + 1: PHÁT HIỆN GAP MỚI (Interval-based: Không OOM kể cả gap hàng triệu gói)
+            gap_start = max_seq + 1
+            gap_end = seq - 1
+            gap_count = gap_end - gap_start + 1
 
+            new_interval = {
+                "device_id": device_id,
+                "boot_id": boot_id,
+                "start_seq": gap_start,
+                "end_seq": gap_end,
+                "detected_at": current_time,
+            }
+            self._pending_gap_intervals.append(new_interval)
             self._cleanup_pending_gaps_if_needed(current_time)
 
             gap_event = {
                 "device_id": device_id,
                 "boot_id": boot_id,
-                "from_seq": max_seq + 1,
-                "to_seq": seq - 1,
-                "count": len(missing),
+                "from_seq": gap_start,
+                "to_seq": gap_end,
+                "count": gap_count,
                 "detected_at": current_time,
             }
             self._gap_events.append(gap_event)
             self._total_gap_events_count += 1
+            self._gap_events_count_by_device[device_id] += 1
             self._session_max_seq[key] = seq
+
+            # missing_seqs: Trả về an toàn (tối đa 1000 phần tử đầu tiên để không tốn RAM nếu gap cực lớn)
+            missing_preview = list(range(gap_start, min(gap_start + 1000, gap_end + 1)))
 
             return IngestResult(
                 stored=True,
                 is_duplicate=False,
                 is_out_of_order=False,
                 is_gap=True,
-                missing_seqs=missing,
+                missing_seqs=missing_preview,
+                gap_count=gap_count,
+                prev_max_seq=max_seq,
+                created_gap_interval=(gap_start, gap_end),
             )
 
     def record_db_duplicate(self, device_id: Optional[str], boot_id: Optional[str],
@@ -200,47 +323,118 @@ class ReliabilityTracker:
         """
         with self._lock:
             self._duplicate_count += 1
-            if was_out_of_order and self._out_of_order_count > 0:
-                self._out_of_order_count -= 1
+            self._duplicate_by_device[device_id] += 1
+
+            if was_out_of_order:
+                if self._out_of_order_count > 0:
+                    self._out_of_order_count -= 1
+                if self._out_of_order_by_device[device_id] > 0:
+                    self._out_of_order_by_device[device_id] -= 1
+
             if boot_id is not None and seq is not None:
-                self._mark_seen((device_id, boot_id), seq)
+                self._mark_seen((device_id, boot_id), seq, time.time())
 
     def revert_incoming(self, device_id: Optional[str], boot_id: Optional[str],
                         seq: Optional[int], ingest_result: IngestResult) -> None:
-        """Hủy bỏ cập nhật tracker nếu thao tác ghi database thất bại hoàn toàn."""
+        """Hoàn nguyên trạng thái tracker nếu thao tác ghi database thất bại hoàn toàn.
+
+        Quy tắc nhất quán khoa học:
+        - received_count: KHÔNG GIẢM. Vì bản tin thực tế đã đến tầng mạng và được backend nhận.
+        - seen_seqs: Xóa sequence khỏi sliding window để thiết bị có thể gửi lại sau này.
+        - max_seq, gap intervals, gap events: Hoàn lại trạng thái trước khi nhận bản tin lỗi.
+        """
         with self._lock:
-            if self._received_count > 0:
-                self._received_count -= 1
+            key = (device_id, boot_id)
 
             if ingest_result.is_duplicate:
-                if self._duplicate_count > 0:
-                    self._duplicate_count -= 1
+                # Gói trùng không thay đổi max_seq hay gaps, không cần revert thêm
                 return
 
+            # Xóa khỏi sliding window
+            if boot_id is not None and seq is not None and key in self._session_seen_seqs:
+                self._session_seen_seqs[key].discard(seq)
+
+            # Hoàn lại out-of-order count và khôi phục gap interval nếu vừa bù gap
             if ingest_result.is_out_of_order:
                 if self._out_of_order_count > 0:
                     self._out_of_order_count -= 1
+                if self._out_of_order_by_device[device_id] > 0:
+                    self._out_of_order_by_device[device_id] -= 1
+                if ingest_result.resolved_gap_seq is not None:
+                    # Tạo lại interval cho sequence chưa được lưu bền
+                    r_seq = ingest_result.resolved_gap_seq
+                    self._pending_gap_intervals.append({
+                        "device_id": device_id,
+                        "boot_id": boot_id,
+                        "start_seq": r_seq,
+                        "end_seq": r_seq,
+                        "detected_at": time.time(),
+                    })
 
-            if boot_id is not None and seq is not None:
-                key = (device_id, boot_id)
-                if key in self._session_seen_seqs:
-                    self._session_seen_seqs[key].discard(seq)
+            # Hoàn lại max_seq
+            if ingest_result.prev_max_seq is not None:
+                self._session_max_seq[key] = ingest_result.prev_max_seq
+            elif key in self._session_max_seq:
+                self._session_max_seq.pop(key, None)
+
+            # Hủy bỏ gap interval và gap event vừa tạo (nếu có)
+            if ingest_result.created_gap_interval is not None:
+                start_s, end_s = ingest_result.created_gap_interval
+                # Xóa interval vừa thêm
+                self._pending_gap_intervals = [
+                    inv for inv in self._pending_gap_intervals
+                    if not (inv["device_id"] == device_id and inv["boot_id"] == boot_id
+                            and inv["start_seq"] == start_s and inv["end_seq"] == end_s)
+                ]
+                if self._total_gap_events_count > 0:
+                    self._total_gap_events_count -= 1
+                if self._gap_events_count_by_device[device_id] > 0:
+                    self._gap_events_count_by_device[device_id] -= 1
+                if self._gap_events:
+                    last_ev = self._gap_events[-1]
+                    if (last_ev.get("device_id") == device_id and last_ev.get("boot_id") == boot_id
+                            and last_ev.get("from_seq") == start_s):
+                        self._gap_events.pop()
 
     def get_stats(self, stored_count: int, device_id: Optional[str] = None,
-                  now: Optional[float] = None) -> dict:
-        """Tổng hợp các chỉ số reliability có thể kiểm chứng."""
+                  now: Optional[float] = None, start: Optional[float] = None,
+                  end: Optional[float] = None) -> dict:
+        """Tổng hợp các chỉ số reliability có thể kiểm chứng.
+
+        Phân định phạm vi rõ ràng:
+        - stored_count: Số bản ghi lưu bền trong cơ sở dữ liệu (được lọc theo start, end, device_id).
+        - runtime counters: Số bản ghi đo đếm trong RAM suốt vòng đời của process hiện tại.
+        - Khi có khoảng thời gian [start, end], schema công bố rõ query_window và runtime_scope
+          để bài báo khoa học và người đối soát không nhầm lẫn.
+        """
         with self._lock:
             current_time = time.time() if now is None else now
-            pending = 0
-            confirmed = self._unresolved_beyond_window_count
 
-            for (dev, _, _), det_time in self._pending_gaps.items():
-                if device_id is not None and dev != device_id:
+            # Chọn counters đúng theo device_id
+            if device_id is not None:
+                received = self._received_by_device[device_id]
+                duplicate = self._duplicate_by_device[device_id]
+                out_of_order = self._out_of_order_by_device[device_id]
+                gaps_count = self._gap_events_count_by_device[device_id]
+                unresolved_base = self._unresolved_beyond_window_by_device[device_id]
+            else:
+                received = self._received_count
+                duplicate = self._duplicate_count
+                out_of_order = self._out_of_order_count
+                gaps_count = self._total_gap_events_count
+                unresolved_base = self._unresolved_beyond_window_count
+
+            pending = 0
+            confirmed = unresolved_base
+
+            for interval in self._pending_gap_intervals:
+                if device_id is not None and interval["device_id"] != device_id:
                     continue
-                if current_time - det_time <= self.late_window_s:
-                    pending += 1
+                cnt = interval["end_seq"] - interval["start_seq"] + 1
+                if current_time - interval["detected_at"] <= self.late_window_s:
+                    pending += cnt
                 else:
-                    confirmed += 1
+                    confirmed += cnt
 
             boot_ids = {
                 b for (d, b) in self._session_max_seq.keys()
@@ -252,12 +446,12 @@ class ReliabilityTracker:
                 if device_id is None or g.get("device_id") == device_id
             ]
 
-            return {
-                "received_count": self._received_count,
+            stats = {
+                "received_count": received,
                 "stored_count": stored_count,
-                "duplicate_count": self._duplicate_count,
-                "out_of_order_count": self._out_of_order_count,
-                "gaps_count": self._total_gap_events_count,
+                "duplicate_count": duplicate,
+                "out_of_order_count": out_of_order,
+                "gaps_count": gaps_count,
                 "missing_packets_pending": pending,
                 "missing_packets_confirmed": confirmed,
                 "unresolved_gaps_beyond_window": confirmed,
@@ -268,3 +462,14 @@ class ReliabilityTracker:
                 "delivery_rate_note": "Chua co bo dem phat (tx_count) tu firmware ESP32 - khong tu tien suy doan delivery rate",
                 "gap_events": gap_events,
             }
+
+            # Ghi nhận ngữ cảnh phạm vi đo lường nếu có lọc theo thời gian
+            if start is not None or end is not None:
+                stats["runtime_scope"] = "process_lifetime"
+                stats["query_window"] = {"start": start, "end": end}
+                stats["scope_note"] = (
+                    "stored_count is filtered by [start, end]; "
+                    "runtime counters (received, duplicate, out-of-order, gaps) reflect current process lifetime"
+                )
+
+            return stats
