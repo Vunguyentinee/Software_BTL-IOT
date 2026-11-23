@@ -234,7 +234,10 @@ export const App: React.FC = () => {
           /* ===== TAB DASHBOARD CHÍNH ===== */
           <>
             {/* 2. CẢNH BÁO KHẨN CẤP & LỖI CẢM BIẾN */}
-            <AlertBanner telemetry={telemetry} />
+            <AlertBanner
+              telemetry={telemetry}
+              onAckAlarm={() => setAppToast({ message: 'Đã gửi xác nhận Operator ACK!' })}
+            />
 
             {/* 3. 4 CARD CHỈ SỐ MÔI TRƯỜNG CHÍNH */}
             <MetricCardsGrid telemetry={telemetry} />

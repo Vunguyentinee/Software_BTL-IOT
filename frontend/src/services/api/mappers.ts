@@ -21,14 +21,16 @@ export function mapBackendTelemetryToFrontend(
 
   // Quy đổi smoke_raw (0 - 4095 ADC) sang PPM hiển thị
   // Khi ESP32 không lắp module gas, smoke_raw = null -> smokePpm = null, has_smoke_sensor = false
+  // Hỗ trợ cả smoke_raw hoặc gas_raw nếu backend/firmware truyền một trong hai
+  const effectiveRawGas = raw.gas_raw ?? raw.smoke_raw ?? null;
   let smokePpm: number | null = null;
-  const hasSmokeSensor = typeof raw.smoke_raw === 'number' && Number.isFinite(raw.smoke_raw);
+  const hasSmokeSensor = typeof effectiveRawGas === 'number' && Number.isFinite(effectiveRawGas);
   if (hasSmokeSensor) {
     // Ước tính PPM từ giá trị analog ADC (0-4095)
-    smokePpm = Math.max(0, Math.round(((raw.smoke_raw as number) / 4095) * 800));
+    smokePpm = Math.max(0, Math.round(((effectiveRawGas as number) / 4095) * 800));
   }
 
-  const smokeAlarm = Boolean(raw.smoke_alarm);
+  const smokeAlarm = Boolean(raw.smoke_alarm || raw.gas_alarm);
   const smokeDetected = hasSmokeSensor && (smokeAlarm || (smokePpm !== null && smokePpm >= currentThresholds.smoke_alarm_ppm));
 
   // ts từ backend là epoch seconds (float)
@@ -42,11 +44,18 @@ export function mapBackendTelemetryToFrontend(
     pir_warmup_remaining_sec: raw.pir_ready ? 0 : 30,
     motion_detected: raw.motion_detected ?? false,
     is_dark: raw.is_dark ?? false,
-    smoke_raw: raw.smoke_raw ?? null,
+    smoke_raw: raw.smoke_raw ?? raw.gas_raw ?? null,
     smoke_ppm: smokePpm,
     has_smoke_sensor: hasSmokeSensor,
     smoke_detected: smokeDetected,
     smoke_alarm: smokeAlarm,
+    gas_raw: raw.gas_raw ?? raw.smoke_raw ?? null,
+    gas_alarm: Boolean(raw.gas_alarm || raw.smoke_alarm),
+    gas_sensor_ok: raw.gas_sensor_ok ?? hasSmokeSensor,
+    door_safety_lock: Boolean(raw.door_safety_lock || (raw.safety_mode && raw.safety_mode !== 'normal')),
+    safety_mode: raw.safety_mode ?? null,
+    safety_reason: raw.safety_reason ?? null,
+    control_mode: raw.control_mode ?? null,
     door_command: raw.door_command ?? 'closed',
     fan_on: Boolean(raw.fan_on),
     led1_on: Boolean(raw.led1_on),

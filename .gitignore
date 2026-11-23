@@ -1,17 +1,59 @@
+# Python & virtual environment
 __pycache__/
+*.py[cod]
+*$py.class
 .venv/
-backend/data/
-.superpowers/
-*.pyc
+venv/
+ENV/
+env/
 .pytest_cache/
-~$*
+.coverage
+htmlcov/
+*.log
+
+# Backend storage & local data
+backend/data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Node.js & Frontend build
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+.eslintcache
+
+# Environment & Secrets
 .env
+.env.*
+!.env.example
+docker/secrets/
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+~$*
+
+# C++ & Arduino build artifacts
+*.o
+*.obj
+*.bin
+*.elf
+*.hex
+*.exe
+safety_tests
+connection_tests
+
+# Media & temporary backup
+*.mp4
+*.zip
 _backup/
+.superpowers/
 ESP32_DigitalTwin_BanGiao_Gas34_LED1/
 ESP32_DigitalTwin_BanGiao_Gas34_LED1.zip
 ESP32_DigitalTwin_KhongGas_LED1Toi/
 ESP32_DigitalTwin_KhongGas_LED1Toi.zip
-*.mp4
-
-# Bí mật / file sinh ra
-docker/secrets/

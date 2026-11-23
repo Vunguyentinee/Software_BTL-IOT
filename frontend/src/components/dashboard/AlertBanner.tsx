@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   AlertTriangle, 
   Flame, 
@@ -7,15 +7,19 @@ import {
   Volume2, 
   Fan, 
   ShieldAlert,
-  CheckCircle2
+  CheckCircle2,
+  Lock,
+  Check
 } from 'lucide-react';
 import { ESP32Telemetry } from '../../types/telemetry';
+import { backendService } from '../../services/backendService';
 
 interface AlertBannerProps {
   telemetry: ESP32Telemetry;
+  onAckAlarm?: () => void;
 }
 
-export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry }) => {
+export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry, onAckAlarm }) => {
   const { 
     heat_alarm, 
     smoke_alarm, 
@@ -25,10 +29,31 @@ export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry }) => {
     temperature_c, 
     dht_ok, 
     pir_ready, 
-    pir_warmup_remaining_sec 
+    pir_warmup_remaining_sec,
+    gas_raw,
+    gas_alarm,
+    door_safety_lock,
+    safety_mode
   } = telemetry;
 
-  const hasHighPriorityAlert = heat_alarm || smoke_alarm;
+  const [acked, setAcked] = useState<boolean>(false);
+  const [acking, setAcking] = useState<boolean>(false);
+
+  const hasHighPriorityAlert = heat_alarm || smoke_alarm || gas_alarm || door_safety_lock;
+
+  const handleOperatorAck = async () => {
+    setAcking(true);
+    try {
+      await backendService.acknowledgeAlarm();
+      setAcked(true);
+      onAckAlarm?.();
+      setTimeout(() => setAcked(false), 8000);
+    } catch (e) {
+      console.error('Operator ack failed:', e);
+    } finally {
+      setAcking(false);
+    }
+  };
 
   return (
     <div className="space-y-3 mb-6">
@@ -71,7 +96,7 @@ export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry }) => {
       )}
 
       {/* 2. CẢNH BÁO KHÓI / KHÍ CHÁY */}
-      {smoke_alarm && smoke_ppm !== null && (
+      {smoke_alarm && (
         <div className="relative overflow-hidden rounded-2xl border border-amber-300 bg-amber-50/90 p-4 shadow-sm">
           <div className="flex items-start gap-3">
             <div className="p-2.5 rounded-xl bg-amber-500 text-white shrink-0 mt-0.5 shadow-xs">
@@ -80,22 +105,76 @@ export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry }) => {
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-bold text-amber-900 uppercase tracking-wide">
-                  Cảnh báo nồng độ khói cao: {smoke_ppm} PPM
+                  Cảnh báo nồng độ khói / khí Gas cao: {smoke_ppm !== null ? `${smoke_ppm} PPM` : (gas_raw !== undefined && gas_raw !== null ? `ADC ${gas_raw}` : 'Vượt ngưỡng')}
                 </h3>
                 <span className="px-2.5 py-0.5 text-[10px] font-bold bg-amber-200 text-amber-900 rounded-full border border-amber-300">
-                  Vượt ngưỡng {thresholds.smoke_alarm_ppm} PPM
+                  Vượt ngưỡng an toàn
                 </span>
               </div>
               <p className="text-xs text-amber-800 mt-1 leading-relaxed">
-                Mật độ khói/khí độc tăng đột biến trong khu vực giám sát. Hãy kiểm tra ngay nguồn nhiệt và thông gió!
+                Mật độ khói/khí gas tăng đột biến trong khu vực giám sát (GPIO 34). Theo luật an toàn, cửa servo được cưỡng chế mở 90° để thoát hiểm.
               </p>
               {pump_on && (
                 <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold bg-blue-100/80 text-blue-900 px-2.5 py-1 rounded-lg">
-                  Bơm nước: ĐANG CHẠY
+                  Bơm nước chữa cháy: ĐANG CHẠY
                 </p>
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 2b. CHẾ ĐỘ AN TOÀN GAS / KHÓA MỞ CỬA 60S */}
+      {door_safety_lock && !smoke_alarm && (
+        <div className="relative overflow-hidden rounded-2xl border border-amber-300 bg-amber-50/90 p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-xl bg-amber-600 text-white shrink-0 mt-0.5 shadow-xs">
+                <Lock className="w-5 h-5 animate-pulse" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-amber-900 uppercase tracking-wide">
+                    Chế độ an toàn: Cửa giữ mở thông gió (Hold 60 giây)
+                  </h3>
+                  <span className="px-2.5 py-0.5 text-[10px] font-bold bg-amber-200 text-amber-900 rounded-full border border-amber-300">
+                    Khóa an toàn
+                  </span>
+                </div>
+                <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+                  Cảm biến gas vừa phát hiện rò rỉ. Theo luật an toàn, cửa servo được cưỡng chế mở 90° và duy trì trong 60 giây sau khi nồng độ gas hạ thấp để xả sạch khí độc.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* THANH XÁC NHẬN NGƯỜI VẬN HÀNH (OPERATOR ACK) */}
+      {hasHighPriorityAlert && (
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-slate-900 text-white rounded-xl shadow-md border border-slate-800">
+          <div className="flex items-center gap-2 text-xs">
+            <Volume2 className="w-4 h-4 text-amber-400 animate-bounce" />
+            <span className="text-slate-300">
+              {acked ? (
+                <span className="text-emerald-400 font-semibold flex items-center gap-1.5">
+                  <Check className="w-4 h-4" /> Đã xác nhận hiện trường. Đang gửi tín hiệu giải phóng LCD tới ESP32...
+                </span>
+              ) : (
+                'Đang có cảnh báo an toàn! Nhấn xác nhận để gửi Operator ACK giải phóng cảnh báo trên LCD ESP32.'
+              )}
+            </span>
+          </div>
+          {!acked && (
+            <button
+              onClick={handleOperatorAck}
+              disabled={acking}
+              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white text-xs font-bold rounded-lg shadow transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              {acking ? 'Đang gửi xác nhận...' : 'Xác nhận đã kiểm tra (Operator ACK)'}
+            </button>
+          )}
         </div>
       )}
 

@@ -31,8 +31,9 @@ function StatusOverlay({ telemetry }: { telemetry: ESP32Telemetry }) {
   const badges = [
     fan_on && { label: '🔄 Quạt ON', color: 'bg-green-500' },
     door_command === 'open' && { label: '🚪 Cửa Mở', color: 'bg-blue-500' },
+    telemetry.door_safety_lock && { label: '🔒 Khóa mở an toàn (Gas)', color: 'bg-amber-600' },
     heat_alarm && { label: '🌡️ Báo Nhiệt!', color: 'bg-red-500' },
-    smoke_alarm && { label: '💨 Báo Khói!', color: 'bg-orange-500' },
+    smoke_alarm && { label: '💨 Báo Khói/Gas!', color: 'bg-orange-500' },
     motion_detected && { label: '🏃 Chuyển Động', color: 'bg-yellow-500' },
     is_dark && { label: '🌙 Trời Tối', color: 'bg-purple-500' },
   ].filter(Boolean) as { label: string; color: string }[];

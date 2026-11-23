@@ -21,6 +21,13 @@ export interface BackendTelemetry {
   smoke_raw?: number | null;
   smoke_alarm?: boolean;
   pump_on?: boolean;
+  gas_raw?: number | null;
+  gas_alarm?: boolean;
+  gas_sensor_ok?: boolean;
+  door_safety_lock?: boolean;
+  safety_mode?: string | null;
+  safety_reason?: string | null;
+  control_mode?: string | null;
   modes?: Record<string, BackendMode>;
   ts?: number; // epoch seconds float
 }

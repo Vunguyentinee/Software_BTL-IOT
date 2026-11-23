@@ -159,6 +159,14 @@ class HttpClient {
       body: JSON.stringify(thresholds),
     });
   }
+
+  /** Gửi xác nhận của người vận hành đối với sự kiện cảnh báo (Operator ACK) */
+  public async acknowledgeAlarm(eventId: string): Promise<{ status: string }> {
+    return this.request<{ status: string }>(`/api/alarms/${eventId}/ack`, {
+      method: 'POST',
+      body: JSON.stringify({ source: 'operator' }),
+    });
+  }
 }
 
 export const httpClient = new HttpClient();

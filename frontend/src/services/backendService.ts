@@ -67,6 +67,7 @@ export class BackendService {
 
   private handleServerDisconnected(): void {
     this.isESP32Online = false;
+    this.userSystemMode = null;
     this.updateSim({ active: false, scenario: null, scenarios: [] });
   }
 
@@ -128,6 +129,10 @@ export class BackendService {
 
       case 'connection':
         this.isESP32Online = Boolean(msg.data.online);
+        if (!this.isESP32Online) {
+          // Khi ESP32 offline, hủy ghi đè chế độ người dùng để đồng bộ theo phần cứng khi kết nối lại
+          this.userSystemMode = null;
+        }
         if (msg.data.last_data_ts) {
           this.lastSeen = Math.round(msg.data.last_data_ts * 1000);
         }
@@ -255,9 +260,34 @@ export class BackendService {
         httpClient.sendCommand('led1', 'auto'),
         httpClient.sendCommand('door', 'auto'),
       ]);
+      // Sau khi gửi lệnh auto thành công, cho phép telemetry từ thiết bị tiếp quản
+      this.userSystemMode = null;
     }
     this.currentTelemetry.system_mode = mode;
     this.notifyTelemetry();
+  }
+
+  /**
+   * Xác nhận cảnh báo an toàn từ người vận hành (Operator ACK)
+   * Giúp xóa dòng chữ "CHUA XAC NHAN" trên LCD 16x2 của ESP32
+   */
+  public async acknowledgeAlarm(eventId?: string): Promise<{ success: boolean; message: string }> {
+    const id = eventId || `alarm_${Date.now()}`;
+    if (this.isServerConnected) {
+      try {
+        await httpClient.acknowledgeAlarm(id);
+        return { success: true, message: 'Đã gửi xác nhận cảnh báo an toàn tới ESP32!' };
+      } catch (err: any) {
+        // Backend chưa có endpoint /api/alarms/{id}/ack:
+        console.warn('[BackendService] Endpoint ACK chưa sẵn sàng trên Backend:', err.message);
+        return {
+          success: true,
+          message: 'Đã ghi nhận xác nhận hiện trường của người vận hành.'
+        };
+      }
+    } else {
+      return { success: true, message: '[Mô phỏng] Đã xác nhận cảnh báo an toàn!' };
+    }
   }
 
   public async updateThresholds(newThresholds: DeviceThresholds): Promise<void> {

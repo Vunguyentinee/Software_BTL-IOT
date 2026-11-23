@@ -49,11 +49,11 @@ export const HistorySection: React.FC<HistorySectionProps> = ({ telemetry }) => 
     Promise.all(HISTORY_METRICS.map((m) => httpClient.getHistoryStats(m.id, timeWindow.fromSec, timeWindow.toSec)))
       .then((results) => {
         if (cancelled) return;
-        setStats({
-          temperature_c: results[0],
-          humidity_pct: results[1],
-          smoke_raw: results[2],
+        const mappedStats: Partial<Record<HistoryMetricId, BackendHistoryStats>> = {};
+        HISTORY_METRICS.forEach((m, idx) => {
+          mappedStats[m.id] = results[idx];
         });
+        setStats(mappedStats as Record<HistoryMetricId, BackendHistoryStats>);
       })
       .catch((e: Error) => {
         if (!cancelled) setStatsError(e.message);

@@ -264,11 +264,23 @@ export const MetricCardsGrid: React.FC<MetricCardsGridProps> = ({ telemetry }) =
 
           <div className="my-2">
             {smoke_ppm !== null ? (
-              <div className="flex items-baseline gap-1">
-                <span className={`text-3xl sm:text-4xl font-extrabold tracking-tight ${smokeStatus.valColor}`}>
-                  {smoke_ppm}
-                </span>
-                <span className="text-lg font-semibold text-slate-400">PPM</span>
+              <div>
+                <div className="flex items-baseline gap-1">
+                  <span className={`text-3xl sm:text-4xl font-extrabold tracking-tight ${smokeStatus.valColor}`}>
+                    {smoke_ppm}
+                  </span>
+                  <span className="text-lg font-semibold text-slate-400">PPM</span>
+                  {telemetry.smoke_raw !== null && telemetry.smoke_raw !== undefined && (
+                    <span className="text-xs text-slate-400 font-mono ml-2">
+                      (ADC {telemetry.smoke_raw})
+                    </span>
+                  )}
+                </div>
+                {telemetry.door_safety_lock && (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-md mt-1">
+                    🔒 Khóa an toàn 60s
+                  </span>
+                )}
               </div>
             ) : (
               <div className="flex items-baseline gap-2">

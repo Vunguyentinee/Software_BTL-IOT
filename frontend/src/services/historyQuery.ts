@@ -1,12 +1,13 @@
 import { TimeFilterRange } from '../types/history';
 
-export type HistoryMetricId = 'temperature_c' | 'humidity_pct' | 'smoke_raw';
+export type HistoryMetricId = 'temperature_c' | 'humidity_pct' | 'smoke_raw' | 'gas_raw';
 
-/** Ba metric mà backend hỗ trợ thống kê (`/api/history/stats`). */
+/** Bốn metric mà backend hỗ trợ thống kê (`/api/history/stats`). */
 export const HISTORY_METRICS: { id: HistoryMetricId; label: string; unit: string; decimals: number }[] = [
   { id: 'temperature_c', label: 'Nhiệt độ', unit: '°C', decimals: 1 },
   { id: 'humidity_pct', label: 'Độ ẩm', unit: '%', decimals: 1 },
-  { id: 'smoke_raw', label: 'Khói/gas (ADC thô)', unit: '', decimals: 0 },
+  { id: 'smoke_raw', label: 'Khói/Gas thô (ADC)', unit: '', decimals: 0 },
+  { id: 'gas_raw', label: 'Khí Gas MQ-2 (ADC)', unit: '', decimals: 0 },
 ];
 
 export interface TimeWindow {

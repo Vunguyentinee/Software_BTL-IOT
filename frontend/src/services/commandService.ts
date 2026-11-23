@@ -5,6 +5,27 @@ import { httpClient } from './api/httpClient';
 import { BackendCommand } from '../types/api';
 import { mapTargetToBackendCommand } from './api/mappers';
 
+/** Dịch các mã lỗi an toàn và mã chi tiết từ ESP32 sang tiếng Việt thân thiện */
+export function translateCommandDetail(detail: string | null | undefined): string | null {
+  if (!detail) return null;
+  const map: Record<string, string> = {
+    safety_override_smoke_alarm: 'Từ chối: Cảnh báo khói/gas đang kích hoạt, cửa bị cưỡng chế mở an toàn!',
+    safety_door_hold_active: 'Từ chối: Cửa đang trong thời gian giữ mở 60s để thông khí an toàn!',
+    safety_override_gas_fan_hold: 'Từ chối: Quạt được giữ nguyên trạng thái an toàn khi rò rỉ gas!',
+    safety_override_heat_alarm: 'Từ chối: Nhiệt độ quá cao (≥40°C), quạt được giữ chạy làm mát!',
+    missing_target_session: 'Từ chối: ESP32 yêu cầu phiên (target_boot_id, target_connection_id)!',
+    wrong_target_boot_id: 'Lỗi phiên: Boot ID không khớp với phiên làm việc của ESP32!',
+    wrong_target_connection_id: 'Lỗi phiên: Connection ID không khớp với phiên kết nối MQTT!',
+    command_expired_on_device: 'Lỗi: Lệnh hết hạn chờ xử lý trên hàng đợi ESP32 (>1s)!',
+    backend_unavailable: 'Lỗi: ESP32 đang ở chế độ cục bộ (mất kết nối backend)!',
+    auto_mode_applied: 'Đã chuyển thiết bị về chế độ Tự động (Auto)',
+    servo_command_sent: 'Đã gửi xung điều khiển Servo',
+    door_held_open: 'Cửa đang được giữ mở an toàn theo luật an toàn Gas',
+    device_offline: 'Thiết bị ESP32 đang mất kết nối (Offline)!',
+  };
+  return map[detail] || detail;
+}
+
 export class CommandService {
   private logs: CommandLogEntry[] = [];
   private listeners: ((logs: CommandLogEntry[]) => void)[] = [];
@@ -71,6 +92,7 @@ export class CommandService {
   private entryFromBackend(c: BackendCommand): CommandLogEntry {
     const target = c.device as DeviceTarget;
     const value = c.action === 'on' || c.action === 'open';
+    const translated = translateCommandDetail(c.detail);
     return {
       id: c.cmd_id,
       target,
@@ -79,7 +101,7 @@ export class CommandService {
       value,
       status: c.status === 'ok' ? 'success' : c.status === 'pending' ? 'pending' : 'error',
       timestamp: Math.round(c.sent_ts * 1000),
-      message: c.detail || `Lệnh từ ${c.source || 'hệ thống'}: ${c.device} -> ${c.action} [${c.status}]`,
+      message: translated || `Lệnh từ ${c.source || 'hệ thống'}: ${c.device} -> ${c.action} [${c.status}]`,
       latencyMs: c.ack_ts ? Math.round((c.ack_ts - c.sent_ts) * 1000) : undefined,
     };
   }
@@ -189,7 +211,8 @@ export class CommandService {
           });
           return ack;
         } else {
-          throw new Error(ackResult.detail || `Lệnh thất bại với trạng thái: ${ackResult.status}`);
+          const detailMsg = translateCommandDetail(ackResult.detail);
+          throw new Error(detailMsg || `Lệnh thất bại với trạng thái: ${ackResult.status}`);
         }
       }
 
