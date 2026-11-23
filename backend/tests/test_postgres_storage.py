@@ -471,3 +471,77 @@ def test_service_works_on_postgres(make):
     svc.on_cmd_ack({"cmd_id": rec["cmd_id"], "result": "ok"})
     assert s.get_command(rec["cmd_id"])["status"] == "ok"
     assert len(s.history("temperature_c", None, None)) == 1
+
+
+def test_gas_telemetry_persistence_and_stats_on_postgres(make):
+    s = make()
+
+    # 1. Lưu bản tin telemetry chứa cảm biến gas và thông tin an toàn
+    t1 = tel(1000.0, 28.0, gas_raw=250, gas_alarm=False, gas_sensor_ok=True,
+             safety_mode="normal", safety_reason=None)
+    t2 = tel(1002.0, 30.0, gas_raw=750, gas_alarm=True, gas_sensor_ok=True,
+             safety_mode="gas_alert", safety_reason="gas leakage threshold exceeded")
+
+    assert s.save_telemetry(t1) is True
+    assert s.save_telemetry(t2) is True
+
+    # 2. History & Page cho metric gas_raw
+    h = s.history("gas_raw", None, None)
+    assert len(h) == 2
+    assert h[0]["value"] == 250 and h[1]["value"] == 750
+
+    page = s.history_page("gas_raw", None, None, limit=10, offset=0)
+    assert len(page) == 2
+    assert page[0]["value"] == 250 and page[1]["value"] == 750
+
+    # 3. Stats cho gas_raw
+    stats = s.history_stats("gas_raw", 1000.0, 1005.0)
+    assert stats["count"] == 2
+    assert stats["min"] == 250.0
+    assert stats["max"] == 750.0
+    assert stats["avg"] == 500.0
+
+    # 4. Keyset CSV streaming cho gas_raw
+    csv_chunks = list(s.history_csv("gas_raw", 1000.0, 1005.0, batch_size=10))
+    csv_text = b"".join(csv_chunks).decode("utf-8")
+    assert "ts,value" in csv_text
+    assert "250" in csv_text
+    assert "750" in csv_text
+
+    # 5. Lưu và truy vấn sự kiện gas_alarm và gas_error
+    s.save_event({"type": "gas_alarm", "state": "start", "value": 750.0, "threshold": 600.0,
+                  "reason": "gas leakage", "uptime_ms": 12000, "ts": 1003.0})
+    s.save_event({"type": "gas_error", "state": "start", "value": None, "threshold": None,
+                  "reason": "sensor pin disconnected", "uptime_ms": 13000, "ts": 1004.0})
+
+    errs = s.list_error_events()
+    err_types = [e["type"] for e in errs]
+    assert "gas_alarm" in err_types
+    assert "gas_error" in err_types
+
+
+def test_gas_migration_idempotent_and_legacy_data(make):
+    s = make()
+
+    # Chạy lại migration nhiều lần trên PostgreSQL thật để xác minh tính an toàn và lặp lại an toàn
+    from app.pg_storage import MIGRATION_SQL
+    with s._pool.connection() as conn:
+        conn.execute(MIGRATION_SQL)
+        conn.execute(MIGRATION_SQL)
+
+    # Lưu bản tin legacy (không có bất kỳ trường gas nào)
+    legacy_rec = tel(500.0, 25.0)
+    assert s.save_telemetry(legacy_rec) is True
+
+    # Xác nhận các cột gas trong PostgreSQL được lưu là NULL
+    with s._pool.connection() as conn:
+        row = conn.execute(
+            "SELECT gas_raw, gas_alarm, gas_sensor_ok, safety_mode, safety_reason "
+            "FROM telemetry WHERE ts = to_timestamp(500.0)"
+        ).fetchone()
+
+    assert row["gas_raw"] is None
+    assert row["gas_alarm"] is None
+    assert row["gas_sensor_ok"] is None
+    assert row["safety_mode"] is None
+    assert row["safety_reason"] is None

@@ -15,8 +15,9 @@ HISTORY_METRICS = frozenset({
     "temperature_c", "humidity_pct", "dht_ok", "pir_ready", "motion_detected",
     "is_dark", "fan_on", "led1_on", "led2_on", "led3_on", "heat_alarm",
     "uptime_ms", "smoke_raw", "smoke_alarm", "pump_on",
+    "gas_raw", "gas_alarm", "gas_sensor_ok",
 })
-HISTORY_STATS_METRICS = frozenset({"temperature_c", "humidity_pct", "smoke_raw"})
+HISTORY_STATS_METRICS = frozenset({"temperature_c", "humidity_pct", "smoke_raw", "gas_raw"})
 
 
 class HistoryStats(TypedDict):
@@ -298,7 +299,7 @@ class InMemoryStorage:
                 dict(e) for e in reversed(self._events)
                 if e.get("type") != "connection"
                 and ("error" in str(e.get("type", "")).lower()
-                     or e.get("type") in ("heat_alarm", "smoke_alarm", "dht_error"))
+                     or e.get("type") in ("heat_alarm", "smoke_alarm", "dht_error", "gas_alarm", "gas_error"))
                 and (start is None or e["ts"] >= start)
                 and (end is None or e["ts"] <= end)
             ]
@@ -357,4 +358,4 @@ class InMemoryStorage:
                 )
             else:
                 stored = len(self._telemetry)
-            return self._tracker.get_stats(stored_count=stored, device_id=device_id, now=now)
+            return self._tracker.get_stats(stored_count=stored, device_id=device_id, now=now, start=start, end=end)

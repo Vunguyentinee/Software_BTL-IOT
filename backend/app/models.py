@@ -30,6 +30,11 @@ class Telemetry(BaseModel):
     smoke_raw: Optional[int] = None
     smoke_alarm: bool = False
     pump_on: bool = False
+    gas_raw: Optional[int] = None
+    gas_alarm: Optional[bool] = None
+    gas_sensor_ok: Optional[bool] = None
+    safety_mode: Optional[str] = None
+    safety_reason: Optional[str] = None
     modes: dict[str, Mode] = Field(default_factory=dict)
     device_id: Optional[str] = None
     boot_id: Optional[str] = None
@@ -39,7 +44,7 @@ class Telemetry(BaseModel):
 class Event(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    type: Literal["heat_alarm", "smoke_alarm", "pump", "fan", "door", "led1", "dht_error"]
+    type: Literal["heat_alarm", "smoke_alarm", "pump", "fan", "door", "led1", "dht_error", "gas_alarm", "gas_error"]
     state: Literal["start", "end"]
     value: Optional[float] = None
     threshold: Optional[float] = None

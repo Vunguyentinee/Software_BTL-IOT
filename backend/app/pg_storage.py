@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS telemetry (
     smoke_raw INTEGER,
     smoke_alarm BOOLEAN,
     pump_on BOOLEAN,
+    gas_raw INTEGER,
+    gas_alarm BOOLEAN,
+    gas_sensor_ok BOOLEAN,
+    safety_mode TEXT,
+    safety_reason TEXT,
     modes JSONB,
     device_id TEXT,
     boot_id TEXT,
@@ -82,6 +87,11 @@ MIGRATION_SQL = """
 ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS device_id TEXT;
 ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS boot_id TEXT;
 ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS seq BIGINT;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS gas_raw INTEGER;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS gas_alarm BOOLEAN;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS gas_sensor_ok BOOLEAN;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS safety_mode TEXT;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS safety_reason TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS telemetry_dedup_idx
 ON telemetry (device_id, boot_id, seq)
 WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL;
@@ -95,6 +105,7 @@ TELEMETRY_COLS = [
     "temperature_c", "humidity_pct", "dht_ok", "pir_ready", "motion_detected", "is_dark",
     "door_command", "fan_on", "led1_on", "led2_on", "led3_on", "heat_alarm", "uptime_ms",
     "smoke_raw", "smoke_alarm", "pump_on",
+    "gas_raw", "gas_alarm", "gas_sensor_ok", "safety_mode", "safety_reason",
 ]
 # chỉ các cột này được truy vấn lịch sử (tên cột không bao giờ lấy trực tiếp từ người dùng)
 # Column names and predicates are constants, never SQL supplied by a caller.
@@ -109,6 +120,7 @@ HISTORY_STATS_SQL = {
         "humidity_pct NOT IN ('NaN'::float8, 'Infinity'::float8, '-Infinity'::float8)",
     ),
     "smoke_raw": ("smoke_raw", "TRUE"),
+    "gas_raw": ("gas_raw", "TRUE"),
 }
 
 COMMAND_COLS = ["cmd_id", "device", "action", "source", "status", "detail"]
@@ -393,7 +405,7 @@ class PostgresStorage:
                           end: Optional[float] = None) -> list[dict]:
         sql = ("SELECT extract(epoch from ts)::float8 AS ts, type, state, value, "
                "threshold, reason, uptime_ms FROM events "
-               "WHERE type != 'connection' AND (type ILIKE '%%error%%' OR type IN ('heat_alarm', 'smoke_alarm', 'dht_error'))")
+               "WHERE type != 'connection' AND (type ILIKE '%%error%%' OR type IN ('heat_alarm', 'smoke_alarm', 'dht_error', 'gas_alarm', 'gas_error'))")
         args: list = []
         if start is not None:
             sql += " AND ts >= to_timestamp(%s)"
@@ -457,7 +469,7 @@ class PostgresStorage:
         with self._pool.connection() as conn:
             stored_count = conn.execute(sql, args).fetchone()["stored_count"]
 
-        return self._tracker.get_stats(stored_count=stored_count, device_id=device_id, now=now)
+        return self._tracker.get_stats(stored_count=stored_count, device_id=device_id, now=now, start=start, end=end)
 
     def verify_telemetry_gaps(self, device_id: str, boot_id: str) -> list[dict]:
         """Truy vấn kiểm chứng gaps trực tiếp trên dữ liệu PostgreSQL bằng SQL Window Functions."""

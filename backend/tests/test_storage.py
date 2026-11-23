@@ -7,8 +7,10 @@ import pytest
 from app.storage import InMemoryStorage, iter_history_csv
 
 
-def tel(ts, temp):
-    return {"ts": ts, "temperature_c": temp, "humidity_pct": 50.0}
+def tel(ts, temp, **extra):
+    d = {"ts": ts, "temperature_c": temp, "humidity_pct": 50.0}
+    d.update(extra)
+    return d
 
 
 def read_csv(chunks):
@@ -277,3 +279,34 @@ def test_corrupt_or_missing_file_starts_empty(tmp_path):
     s = InMemoryStorage(str(p))
     assert s.load_config() is None
     assert InMemoryStorage(str(tmp_path / "nope.json")).list_events() == []
+
+
+def test_gas_raw_history_and_stats_in_memory():
+    s = InMemoryStorage()
+    s.save_telemetry(tel(100.0, 30.0, gas_raw=300, gas_alarm=False, gas_sensor_ok=True))
+    s.save_telemetry(tel(102.0, 31.0, gas_raw=600, gas_alarm=True, gas_sensor_ok=True))
+
+    # History
+    h = s.history("gas_raw", None, None)
+    assert len(h) == 2
+    assert h[0]["value"] == 300 and h[1]["value"] == 600
+
+    # History Page
+    page = s.history_page("gas_raw", None, None, limit=10, offset=0)
+    assert len(page) == 2
+    assert page[0]["value"] == 300
+
+    # History Stats
+    stats = s.history_stats("gas_raw", None, None)
+    assert stats["count"] == 2
+    assert stats["min"] == 300.0
+    assert stats["max"] == 600.0
+    assert stats["avg"] == 450.0
+
+    # Error Events
+    s.save_event({"type": "gas_alarm", "state": "start", "value": 600.0, "ts": 103.0})
+    s.save_event({"type": "gas_error", "state": "start", "reason": "sensor_lost", "ts": 104.0})
+    errs = s.list_error_events()
+    types = [e["type"] for e in errs]
+    assert "gas_alarm" in types
+    assert "gas_error" in types
