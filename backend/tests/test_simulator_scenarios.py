@@ -48,7 +48,8 @@ def sim(rec, clock):
 
 def test_scenario_ids_match_the_frontend_list():
     assert list(SCENARIOS) == ["normal", "cooling_fan", "heat_alarm", "smoke_danger", "motion_door",
-                               "dark_light", "dht_error", "pir_warming_up", "esp32_offline"]
+                               "dark_light", "dht_error", "pir_warming_up", "esp32_offline",
+                               "gas_leak"]
 
 
 def test_heat_alarm_scenario_raises_alarm_and_fan_with_events(sim, rec):

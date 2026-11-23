@@ -11,6 +11,7 @@ import json
 import logging
 import random
 import time
+import uuid
 from typing import Callable, Optional
 
 from app.models import DEVICES, Thresholds
@@ -20,8 +21,15 @@ log = logging.getLogger("fake_esp32")
 PIR_WARMUP_S = 60.0
 SIM_STATE_PERIOD_S = 5.0
 
+# Quy tắc cửa (đã thống nhất, firmware phải khớp):
+DOOR_HOLD_PIR_S = 10.0   # auto: giữ mở 10 s sau lần cuối PIR phát hiện chuyển động
+DOOR_HOLD_GAS_S = 60.0   # giữ mở 60 s sau khi cảnh báo gas hết; bật lại thì hủy và đếm lại từ lần hết kế tiếp
+# Ngưỡng gas (ADC 0-4095). GIẢ ĐỊNH của simulator, chưa phải số liệu hiệu chuẩn của firmware.
+GAS_ALARM_ON = 2000
+GAS_ALARM_OFF = 1500
+
 # id -> (nhãn hiển thị, thông số). Các id trùng với danh sách kịch bản của giao diện.
-_DEFAULTS = dict(temp=28.0, hum=60.0, smoke=300, dark=False, motion=False,
+_DEFAULTS = dict(temp=28.0, hum=60.0, smoke=300, gas=400, dark=False, motion=False,
                  dht_ok=True, pir_warmup=False, silent=False)
 SCENARIOS: dict[str, tuple[str, dict]] = {
     "normal": ("Bình thường", {}),
@@ -33,6 +41,7 @@ SCENARIOS: dict[str, tuple[str, dict]] = {
     "dht_error": ("Lỗi cảm biến DHT11", dict(dht_ok=False)),
     "pir_warming_up": ("PIR đang khởi động (60 giây)", dict(pir_warmup=True, motion=True)),
     "esp32_offline": ("Mất kết nối ESP32", dict(silent=True)),
+    "gas_leak": ("Rò rỉ gas: cảnh báo và mở cửa", dict(gas=3000)),
 }
 
 
@@ -40,6 +49,9 @@ class FakeEsp32:
     def __init__(self, client, device_id: str = "esp32-home", fail_door: bool = False,
                  clock: Callable[[], float] = time.monotonic):
         self.client = client
+        self.device_id = device_id
+        self.boot_id = uuid.uuid4().hex   # mới ở mỗi lần khởi động
+        self.seq = 0
         self.prefix = f"home/{device_id}/"
         self.fail_door = fail_door
         self.clock = clock
@@ -52,8 +64,12 @@ class FakeEsp32:
         self.heat_alarm = False
         self.smoke_alarm = False
         self.pump_on = False
+        self.gas_alarm = False
+        self.gas_sensor_ok = True
+        self.pir_hold_until: Optional[float] = None
+        self.gas_hold_until: Optional[float] = None
         self._reported = {"heat_alarm": False, "smoke_alarm": False, "pump": False,
-                          "fan": False, "dht_error": False}
+                          "fan": False, "dht_error": False, "gas_alarm": False}
         self.scenario = "normal"
         self.pir_until: Optional[float] = None
         self.last_real_device_ts: Optional[float] = None
@@ -72,6 +88,7 @@ class FakeEsp32:
         self.temperature = params["temp"]
         self.humidity = params["hum"]
         self.smoke_raw = params["smoke"]
+        self.gas_raw = params["gas"]
         self.is_dark = params["dark"]
         self.motion = params["motion"]
         self.dht_ok = params["dht_ok"]
@@ -102,6 +119,7 @@ class FakeEsp32:
 
     def _apply_auto(self) -> None:
         t = self.temperature
+        now = self.clock()
         # DHT11 lỗi: giữ nguyên trạng thái quạt và cảnh báo nhiệt trước đó (đặc tả mục 3)
         if self.dht_ok:
             if self.modes["fan"] == "auto":
@@ -118,11 +136,51 @@ class FakeEsp32:
         elif self.smoke_raw <= self.thresholds.smoke_low:
             self.smoke_alarm = False
         self.pump_on = self.smoke_alarm
+        # Cảnh báo nhiệt: quạt bắt buộc chạy, kể cả khi đang ở chế độ thủ công
+        if self.heat_alarm:
+            self.fan_on = True
+        self._apply_gas(now)
         if self.modes["led1"] == "auto":
             self.led1_on = self.is_dark
-        if self.modes["door"] == "auto":
-            self.door = "open" if self._motion() else "closed"
+        if self._motion():
+            self.pir_hold_until = now + DOOR_HOLD_PIR_S
+        if self.gas_alarm:
+            self.door = "open"   # an toàn: cảnh báo gas luôn mở cửa, kể cả chế độ thủ công
+        elif self.modes["door"] == "auto":
+            holding = ((self.pir_hold_until is not None and now < self.pir_hold_until)
+                       or (self.gas_hold_until is not None and now < self.gas_hold_until))
+            self.door = "open" if holding else "closed"
         self._emit_changes()
+
+    def _apply_gas(self, now: float) -> None:
+        was = self.gas_alarm
+        if self.gas_sensor_ok:
+            if self.gas_raw >= GAS_ALARM_ON:
+                self.gas_alarm = True
+            elif self.gas_raw <= GAS_ALARM_OFF:
+                self.gas_alarm = False
+        if self.gas_alarm and not was:
+            self.gas_hold_until = None                      # bật lại: hủy bộ đếm đang chạy
+        elif was and not self.gas_alarm:
+            self.gas_hold_until = now + DOOR_HOLD_GAS_S     # hết cảnh báo: bắt đầu đếm 60 s
+
+    def _safety(self) -> tuple[str, Optional[str]]:
+        if self.smoke_alarm:
+            return "fire_alert", "smoke"
+        if self.gas_alarm:
+            return "gas_alert", "gas_leak"
+        return "normal", None
+
+    def _safety_block(self, device: str, action: str) -> Optional[str]:
+        """Ràng buộc an toàn thi hành tại chỗ (kể cả khi mất mạng)."""
+        if device == "fan" and action == "off":
+            if self.heat_alarm:
+                return "heat_alarm"
+            if self.smoke_alarm:
+                return "smoke_alarm"
+        if device == "door" and action == "close" and self.gas_alarm:
+            return "gas_alarm"
+        return None
 
     def _motion(self) -> bool:
         return self.motion and self.pir_ready
@@ -130,7 +188,8 @@ class FakeEsp32:
     def _emit_changes(self) -> None:
         t = self.thresholds
         now = {"heat_alarm": self.heat_alarm, "smoke_alarm": self.smoke_alarm,
-               "pump": self.pump_on, "fan": self.fan_on, "dht_error": not self.dht_ok}
+               "pump": self.pump_on, "fan": self.fan_on, "dht_error": not self.dht_ok,
+               "gas_alarm": self.gas_alarm}
         details = {
             "heat_alarm": (self.temperature, t.heat_alarm_on if self.heat_alarm else t.heat_alarm_off, "high_temp"),
             "smoke_alarm": (self.smoke_raw, t.smoke_high if self.smoke_alarm else t.smoke_low, "smoke"),
@@ -138,6 +197,7 @@ class FakeEsp32:
             "fan": (self.temperature, t.fan_on if self.fan_on else t.fan_off,
                     "manual" if self.modes["fan"] == "manual" else "high_temp"),
             "dht_error": (None, None, "dht_read_failed"),
+            "gas_alarm": (self.gas_raw, GAS_ALARM_ON if self.gas_alarm else GAS_ALARM_OFF, "gas_leak"),
         }
         for kind, active in now.items():
             if active == self._reported[kind]:
@@ -155,8 +215,11 @@ class FakeEsp32:
     def build_telemetry(self) -> dict:
         self._apply_auto()
         motion = self._motion()
+        self.seq += 1
+        safety_mode, safety_reason = self._safety()
         return {
             "is_sim": True,
+            "device_id": self.device_id, "boot_id": self.boot_id, "seq": self.seq,
             "temperature_c": round(self.temperature, 1) if self.dht_ok else None,
             "humidity_pct": self.humidity if self.dht_ok else None,
             "dht_ok": self.dht_ok,
@@ -165,6 +228,8 @@ class FakeEsp32:
             "led2_on": motion, "led3_on": self.heat_alarm, "heat_alarm": self.heat_alarm,
             "uptime_ms": self._uptime_ms(),
             "smoke_raw": self.smoke_raw, "smoke_alarm": self.smoke_alarm, "pump_on": self.pump_on,
+            "gas_raw": self.gas_raw, "gas_alarm": self.gas_alarm, "gas_sensor_ok": self.gas_sensor_ok,
+            "safety_mode": safety_mode, "safety_reason": safety_reason,
             "modes": dict(self.modes),
         }
 
@@ -220,6 +285,12 @@ class FakeEsp32:
         cmd_id, device, action = data["cmd_id"], data.get("device"), data.get("action")
         if device not in DEVICES or action not in DEVICES[device] or (device == "door" and self.fail_door):
             self._ack("cmd/ack", {"cmd_id": cmd_id, "result": "failed", "detail": "rejected by device"})
+            return
+        blocked = self._safety_block(device, action)
+        if blocked:
+            self._ack("cmd/ack", {"cmd_id": cmd_id, "result": "failed",
+                                  "detail": f"safety_override:{blocked}",
+                                  "device_id": self.device_id, "boot_id": self.boot_id})
             return
         if action == "auto":
             self.modes[device] = "auto"

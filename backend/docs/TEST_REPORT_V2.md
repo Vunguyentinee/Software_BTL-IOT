@@ -82,7 +82,21 @@ Stack cô lập (`docker compose -p btlsec`, cổng 18831/18001/18301/18432, `.e
 
 **Chưa kiểm chứng:** ESP32 thật kết nối với tài khoản `esp32` (chưa có firmware WiFi/MQTT); trình duyệt thật tự đăng nhập (chỉ kiểm tra qua unit test và `config.js`); TLS (không triển khai).
 
+### 2.3 Đồng bộ simulator với firmware (`tests/test_simulator_v2.py`, 21 test)
+
+Chạy lại **cùng kịch bản** trên simulator cũ (commit `351c755`) và mới để đối chiếu:
+
+| Kịch bản | Trước | Sau | Kết quả |
+|---|---|---|---|
+| Có người về → PIR hết phát hiện, sau 1 s | Cửa `closed` (đóng ngay) | Cửa `open` | Đã sửa |
+| Cùng kịch bản, sau 10 s (từ lần cuối PIR) | `closed` | `closed` | Đúng quy tắc |
+| Quạt đang thủ công TẮT, nhiệt độ lên 41.5°C | `heat_alarm=true` nhưng `fan_on=false` | `fan_on=true` | Đã sửa |
+
+Quy tắc đã khóa bằng test: PIR giữ 10 s và phát hiện mới thì đếm lại; gas: mở liên tục khi còn cảnh báo, giữ 60 s sau khi hết, bật lại thì hủy và đếm lại 60 s; `fan off` khi `heat_alarm` và `door close` khi `gas_alarm` bị ACK `failed` với `safety_override:<lý do>`; sự kiện gas edge-triggered; histeresis gas; `fire_alert` ưu tiên hơn `gas_alert`; `boot_id` mới mỗi lần khởi động, `seq` tăng +1; telemetry hợp lệ với model backend.
+
+**Giả định cần Hiệu xác nhận:** ngưỡng gas 2000/1500; chế độ thủ công bị ghi đè bởi cảnh báo gas (cửa) và cảnh báo nhiệt (quạt); `smoke_alarm` cũng chặn `fan off`.
+
 ## 3. Việc còn lại (chưa có kết quả)
 
-- Đồng bộ simulator (Task 5), kiểm thử lỗi và hiệu năng trên Docker + ESP32 thật (Task 6).
+- Kiểm thử lỗi và hiệu năng (Task 6): restart backend, mất MQTT, PostgreSQL tạm ngừng, burst telemetry; đo độ trễ avg/P95/max.
 - Đo độ trễ: **chỉ số liệu từ ESP32 thật mới dùng cho bài báo**; chưa có firmware WiFi/MQTT.
