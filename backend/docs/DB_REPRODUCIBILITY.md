@@ -158,3 +158,11 @@ WHERE gas_raw IS NOT NULL OR smoke_raw IS NOT NULL;
 | `missing_packets_pending` | `ReliabilityTracker` | Runtime (Cửa sổ $T_{\text{late}} = 10s$) | Reset về 0 | Gói tin đang chờ trong cửa sổ trễ |
 | `unresolved_gaps_beyond_window` | `ReliabilityTracker` | Runtime | Reset về 0 | Gói khuyết vượt quá cửa sổ trễ |
 | `delivery_rate` | Firmware ESP32 `tx_count` | Chưa có | Luôn trả `None` | **Không tự bịa delivery rate giả định 100%** |
+
+---
+
+## 7. Ghi chú về API Endpoints và Query Parameters
+
+- **Xuất CSV Lịch sử**: Endpoint chính thức là `GET /api/history.csv?metric=...` (chú ý URL có dấu chấm `.csv`, không phải `/csv`).
+- **Khoảng thời gian truy vấn**: Các endpoint lịch sử nhận query parameters `from` (alias cho `from_`) và `to` (chấp nhận Unix timestamp epoch giây hoặc chuỗi ISO-8601).
+- **Trạng thái Endpoint Mở rộng**: Các chức năng `reliability_stats()`, `command_stats()`, `list_connection_events()`, `list_error_events()` hiện đã được kiểm thử và sẵn sàng ở tầng Storage (`PostgresStorage` / `InMemoryStorage`). Các endpoint REST tương ứng chưa được định tuyến trong `backend/app/api.py` (chờ Vũ tích hợp khi cần thiết).

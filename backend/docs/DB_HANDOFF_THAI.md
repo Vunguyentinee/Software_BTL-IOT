@@ -11,7 +11,12 @@ Các phần đã triển khai ở tầng Storage:
 | `393a3f3` | `history_csv()` – xuất CSV theo batch/keyset |
 | `4bfaf05` | Integration test persistence qua Storage instance mới |
 
-Ba method lịch sử mới có trong `Storage` Protocol, `InMemoryStorage` và `PostgresStorage`. `backend/app/api.py` hiện chỉ expose `GET /api/history` dùng method cũ `history()`. Chưa có endpoint REST cho statistics, pagination hoặc CSV trong source hiện tại.
+Ba method lịch sử mới có trong `Storage` Protocol, `InMemoryStorage` và `PostgresStorage`. Đồng thời, `backend/app/api.py` đã tích hợp đầy đủ 3 endpoint REST:
+- `GET /api/history/stats?metric=...&from=...&to=...`
+- `GET /api/history/page?metric=...&from=...&to=...&limit=...&offset=...`
+- `GET /api/history.csv?metric=...&from=...&to=...&batch_size=...` (chú ý đường dẫn có đuôi `.csv`, không phải `/csv`)
+
+Các endpoint mở rộng về độ tin cậy và sự kiện (`reliability_stats`, `command_stats`, `list_connection_events`, `list_error_events`) hiện đã hoàn tất ở tầng Storage, sẵn sàng để Vũ cân nhắc expose lên REST API khi cần thiết.
 
 ## 2. Contract Storage
 
@@ -177,7 +182,7 @@ Nhằm tăng cường độ ổn định cho hệ thống và đáp ứng yêu c
 1. **Bảo vệ luồng Realtime khi Database gặp sự cố tạm thời**:
    - Trong `on_telemetry()`: Bọc lệnh gọi `self.storage.save_telemetry(rec)` trong `try ... except Exception`.
    - Nếu lưu vào DB thất bại (ví dụ PostgreSQL rớt kết nối mạng hoặc timeout): log lỗi bằng `log.error`, nhưng **không để ngoại lệ làm sập luồng nhận MQTT**. Trạng thái realtime `_telemetry`, cập nhật nhịp tim `_last_seen`, `_set_online(True)` và broadcast WebSocket vẫn hoạt động bình thường, giúp giao diện giám sát nhà thông minh không bị gián đoạn.
-   - Tuyệt đối không coi failed persistence là `stored = True` (gán `stored = None`).
+   - Không coi failed persistence là `stored = True` (gán `stored = None`).
    - Nếu bản tin là duplicate (`stored is False`): bỏ qua một cách idempotent, không ghi đè và không re-broadcast.
    - Vẫn bảo toàn 100% cơ chế ưu tiên ESP32 thật so với simulator trong commit `da4cb44`.
 2. **Phân biệt lý do ngoại tuyến tường minh trong `_set_online`**:
@@ -256,4 +261,4 @@ $env:BTL_TEST_DATABASE_URL = 'postgresql://postgres:test@127.0.0.1:55432/smartho
 python -m pytest --basetemp='D:\IOT-BTL\_pytest_thai_temp'
 ```
 
-Kết quả thực tế đạt: **237 passed** (100% PASS) trong 8.11 giây.
+Kết quả thực tế đạt: **239 passed** trong 8.25 giây trên PostgreSQL test container `btl-iot-testdb` (port 55432).

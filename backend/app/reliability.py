@@ -108,16 +108,30 @@ class ReliabilityTracker:
             if max_seq is not None:
                 self._session_max_seq[key] = max_seq
                 self._session_last_active[key] = time.time()
+                self._evict_oldest_session_if_needed()
 
     def _evict_oldest_session_if_needed(self) -> None:
         """Giới hạn số lượng session theo dõi trong RAM (LRU eviction)."""
-        if len(self._session_last_active) <= self.max_sessions:
-            return
-        oldest_key = min(self._session_last_active.keys(), key=lambda k: self._session_last_active[k])
-        self._session_last_active.pop(oldest_key, None)
-        self._session_max_seq.pop(oldest_key, None)
-        self._session_seen_seqs.pop(oldest_key, None)
-        self._session_seen_deque.pop(oldest_key, None)
+        while len(self._session_last_active) > self.max_sessions:
+            oldest_key = min(self._session_last_active.keys(), key=lambda k: self._session_last_active[k])
+            self._session_last_active.pop(oldest_key, None)
+            self._session_max_seq.pop(oldest_key, None)
+            self._session_seen_seqs.pop(oldest_key, None)
+            self._session_seen_deque.pop(oldest_key, None)
+
+            # Dọn sạch các pending gap intervals của session bị evict
+            # để đảm bảo không rò rỉ RAM từ các session cũ không còn hoạt động.
+            # Số gói missing của session này được chuyển an toàn sang unresolved counter.
+            dev, boot = oldest_key
+            retained: list[dict] = []
+            for interval in self._pending_gap_intervals:
+                if interval.get("device_id") == dev and interval.get("boot_id") == boot:
+                    missing_count = interval["end_seq"] - interval["start_seq"] + 1
+                    self._unresolved_beyond_window_count += missing_count
+                    self._unresolved_beyond_window_by_device[dev] += missing_count
+                else:
+                    retained.append(interval)
+            self._pending_gap_intervals = retained
 
     def _mark_seen(self, key: tuple[Optional[str], Optional[str]], seq: int, now: float) -> None:
         """Thêm sequence vào sliding window có giới hạn dung lượng."""
@@ -135,10 +149,11 @@ class ReliabilityTracker:
                 seen_set.discard(oldest)
 
     def _cleanup_pending_gaps_if_needed(self, now: float) -> None:
-        """Thu gom các gap intervals quá hạn nếu số lượng intervals vượt ngưỡng an toàn."""
+        """Thu gom các gap intervals quá hạn hoặc vượt trần an toàn (Hard Cap)."""
         if len(self._pending_gap_intervals) <= self.max_pending_gap_intervals:
             return
 
+        # 1. Thu hồi các intervals đã quá hạn late_window_s
         retained: list[dict] = []
         for interval in self._pending_gap_intervals:
             if now - interval["detected_at"] > self.late_window_s:
@@ -148,6 +163,20 @@ class ReliabilityTracker:
                 self._unresolved_beyond_window_by_device[dev] += missing_count
             else:
                 retained.append(interval)
+
+        # 2. Hard Cap cưỡng chế: Nếu sau khi lọc thời gian mà số lượng intervals vẫn vượt
+        # max_pending_gap_intervals (ví dụ: bị bão late arrivals phân mảnh cực mạnh trong thời gian ngắn),
+        # giải phóng các intervals cũ nhất để bảo vệ RAM tuyệt đối không tăng vô hạn.
+        if len(retained) > self.max_pending_gap_intervals:
+            retained.sort(key=lambda x: x["detected_at"])
+            overflow_count = len(retained) - self.max_pending_gap_intervals
+            for i in range(overflow_count):
+                inv = retained[i]
+                missing_count = inv["end_seq"] - inv["start_seq"] + 1
+                dev = inv.get("device_id")
+                self._unresolved_beyond_window_count += missing_count
+                self._unresolved_beyond_window_by_device[dev] += missing_count
+            retained = retained[overflow_count:]
 
         self._pending_gap_intervals = retained
 
@@ -183,6 +212,7 @@ class ReliabilityTracker:
                             "detected_at": det_at,
                         }
                         self._pending_gap_intervals.append(new_interval)
+                        self._cleanup_pending_gaps_if_needed(time.time())
                     return True
         return False
 

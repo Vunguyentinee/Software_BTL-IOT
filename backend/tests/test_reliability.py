@@ -818,3 +818,67 @@ def test_service_on_event_does_not_crash_when_db_fails():
     assert len(emitted_events) == 1
     assert emitted_events[0]["kind"] == "event"
     assert emitted_events[0]["data"]["type"] == "heat_alarm"
+
+
+# ==============================================================================
+# 25. Test Bounded Memory Khi Tất Cả Sessions Đều Có Pending Gaps
+# ==============================================================================
+def test_bounded_memory_all_sessions_have_pending_gaps():
+    """Kiểm tra giới hạn bộ nhớ nghiêm ngặt ngay cả khi tất cả sessions đều có pending gaps.
+
+    Khi số lượng session vượt max_sessions, session cũ nhất bị evict phải được dọn sạch
+    khỏi RAM (kể cả pending gap intervals của nó), và missing packets của nó được kết
+    chuyển an toàn vào unresolved counters.
+    """
+    tracker = ReliabilityTracker(max_sessions=10)
+    dev = "esp32-gap-storm"
+
+    # Tạo 25 sessions liên tiếp, mỗi session đều sinh 1 pending gap [2, 9] (8 missing packets)
+    for i in range(25):
+        boot = f"boot-{i}"
+        tracker.record_incoming(dev, boot, 1, now=1000.0 + i * 2)
+        tracker.record_incoming(dev, boot, 10, now=1001.0 + i * 2)
+
+    # 1. Số sessions trong RAM bị chặn cứng ở mức tối đa 10
+    assert len(tracker._session_last_active) <= 10
+    assert len(tracker._session_max_seq) <= 10
+
+    # 2. Số pending gap intervals trong RAM cũng không bị rò rỉ từ 15 sessions đã bị evict
+    assert len(tracker._pending_gap_intervals) <= 10
+
+    # 3. 15 sessions cũ nhất (từ boot-0 đến boot-14) đã bị evict:
+    # 15 sessions * 8 missing packets = 120 missing packets phải được kết chuyển sang unresolved
+    assert tracker._unresolved_beyond_window_count == 15 * 8
+    assert tracker._unresolved_beyond_window_by_device[dev] == 15 * 8
+
+    # 4. Khi lấy stats, tổng số missing packets confirmed phản ánh đúng các sessions bị evict
+    stats = tracker.get_stats(stored_count=50, device_id=dev, now=1100.0)
+    assert stats["missing_packets_confirmed"] >= 120
+    assert stats["boot_count"] <= 10
+
+
+# ==============================================================================
+# 26. Test Hard Cap Cưỡng Chế Khi Bị Bão Interval Fragmentation
+# ==============================================================================
+def test_interval_fragmentation_hard_cap():
+    """Kiểm tra hard cap cưỡng chế khi số gap intervals vượt trần cho phép do phân mảnh."""
+    # Đặt max_pending_gap_intervals = 5
+    tracker = ReliabilityTracker(max_sessions=50, max_pending_gap_intervals=5)
+    dev = "esp32-fragmentation"
+    boot = "boot-frag-1"
+
+    # Gửi seq=1 và seq=100 -> tạo 1 gap lớn [2, 99] (98 missing packets)
+    tracker.record_incoming(dev, boot, 1, now=1000.0)
+    tracker.record_incoming(dev, boot, 100, now=1001.0)
+    assert len(tracker._pending_gap_intervals) == 1
+
+    # Gửi các late arrival rời rạc cắt nhỏ interval: 10, 20, 30, 40, 50, 60
+    # Mỗi lần cắt sẽ chia đôi interval, làm bùng nổ số lượng intervals
+    for late_seq in [10, 20, 30, 40, 50, 60, 70, 80]:
+        tracker.record_incoming(dev, boot, late_seq, now=1002.0)
+
+    # Số lượng intervals trong RAM bị chặn cứng không vượt quá trần 5
+    assert len(tracker._pending_gap_intervals) <= 5
+
+    # Tổng missing packets của các intervals bị đẩy ra khỏi trần được bảo toàn vào unresolved
+    assert tracker._unresolved_beyond_window_count > 0
