@@ -87,7 +87,7 @@ history_csv(
 - PostgreSQL chốt `max(id)` khi gọi method, sau đó đọc từng batch bằng keyset `(ts,id)`; không `fetchall()` toàn bộ lịch sử.
 - InMemory tạo snapshot O(n) của các trường xuất. Đây là giới hạn thiết kế được chấp nhận vì `max_telemetry` giới hạn deque.
 
-## 3. Danh sách 18 metric lịch sử
+## 3. Danh sách 20 metric lịch sử
 
 Allowlist `HISTORY_METRICS` trong `backend/app/storage.py` gồm đúng:
 
@@ -103,16 +103,18 @@ Allowlist `HISTORY_METRICS` trong `backend/app/storage.py` gồm đúng:
 10. `led3_on`
 11. `heat_alarm`
 12. `uptime_ms`
-13. `smoke_raw`
-14. `smoke_alarm`
+13. `smoke_raw` (Khói MQ-2 thô tại GPIO34)
+14. `smoke_alarm` (Cảnh báo khói MQ-2)
 15. `pump_on`
-16. `gas_raw` (Mới: Nồng độ gas MQ-2 thô)
-17. `gas_alarm` (Mới: Cảnh báo rò rỉ gas)
-18. `gas_sensor_ok` (Mới: Trạng thái cảm biến gas hoạt động tốt)
+16. `gas_raw` (Legacy / Deprecated, nồng độ gas cũ)
+17. `gas_alarm` (Legacy / Deprecated, cảnh báo gas cũ)
+18. `gas_sensor_ok` (Legacy / Deprecated, trạng thái cảm biến gas cũ)
+19. `door_safety_lock` (Mới V2: Cờ khóa an toàn cửa)
+20. `gas_sensor_fault` (Mới V2: Cờ lỗi cảm biến khí)
 
-Các trường: `safety_mode`, `safety_reason`, `door_command`, `modes`, `device_id`, `boot_id`, `seq` không nằm trong allowlist metric vẽ đồ thị. Không tự ý đưa các trường định danh hoặc chuỗi trạng thái vào biểu đồ.
+Các trường: `safety_mode`, `safety_reason`, `control_mode`, `backend_state`, `active_alarms`, `door_command`, `modes`, `device_id`, `boot_id`, `connection_id`, `seq`, `tx_count` không nằm trong allowlist metric vẽ đồ thị. Không tự ý đưa các trường định danh hoặc chuỗi trạng thái vào biểu đồ.
 
-Allowlist `HISTORY_STATS_METRICS`: Gồm 4 metric số: `temperature_c`, `humidity_pct`, `smoke_raw`, `gas_raw`.
+Allowlist `HISTORY_STATS_METRICS`: Gồm 4 metric số: `temperature_c`, `humidity_pct`, `smoke_raw`, `gas_raw`. Các metric boolean hoặc text không hỗ trợ `history_stats()`.
 
 ## 4. Validation chung
 
@@ -129,26 +131,32 @@ Lưu ý: method cũ `history()` được giữ nguyên để tương thích. Val
 
 ## 5. Phối hợp Vũ – tích hợp backend/API
 
-### 5.1. Các Storage method mới sẵn sàng tích hợp
+### 5.1. Các Storage method mới đã hoàn thành & kiểm thử 100%
 
-Tầng Storage (`InMemoryStorage` và `PostgresStorage`) đã hoàn thiện các method mở rộng phục vụ độ tin cậy và báo cáo khoa học:
+Tầng Storage (`InMemoryStorage` và `PostgresStorage`) đã hoàn thiện và kiểm thử đạt 434 tests PASS trên PostgreSQL:
 
 | Method mới | Tham số | Kết quả trả về | Mục đích |
 |---|---|---|---|
-| `reliability_stats()` | `device_id`, `start`, `end`, `now` | JSON dict độ tin cậy | Số bản tin nhận, lưu, duplicate, out-of-order, gaps, pending gaps, unresolved gaps beyond window |
-| `command_stats()` | `start`, `end` | JSON dict thống kê lệnh | Tổng lệnh, ok, failed, timeout, pending, success_rate, min/avg/max latency |
+| `reliability_stats()` | `device_id`, `start`, `end`, `now` | JSON dict độ tin cậy | Số bản tin nhận, lưu, duplicate, out-of-order, gaps, pending gaps, tx_attempted_count, delivery_rate, storage_rate |
+| `command_stats()` | `start`, `end` | JSON dict thống kê lệnh | Tổng lệnh, ok, failed, timeout, pending, confirmed_count, success_rate, min/avg/max duration, min/avg/max confirm latency |
 | `list_connection_events()` | `limit`, `start`, `end` | `list[dict]` | Lịch sử các lần online / offline của thiết bị lưu từ bảng `events` |
-| `list_error_events()` | `limit`, `start`, `end` | `list[dict]` | Lịch sử sự kiện lỗi (`dht_error`) và cảnh báo cháy (`heat_alarm`, `smoke_alarm`) |
+| `list_error_events()` | `limit`, `start`, `end` | `list[dict]` | Lịch sử sự kiện lỗi (`dht_error`, `gas_sensor_fault`, `door_open_unconfirmed`, `fan_rotation_unconfirmed`, `alarm_response`) |
 | `verify_telemetry_gaps()` | `device_id`, `boot_id` (chỉ trên Postgres) | `list[dict]` | Dùng Window function `lag()` kiểm chứng độc lập khoảng gap sequence |
 
-### 5.2. Đề xuất REST endpoint để Vũ cân nhắc expose
+### 5.2. Các REST API đã chính thức có trên main
 
-| Đề xuất endpoint | Method gọi | Gợi ý query params | Kết quả |
+Các endpoint sau đã được Vũ expose đầy đủ trong `backend/app/api.py`:
+
+| Endpoint | Method gọi | Tham số query | Kết quả |
 |---|---|---|---|
-| `GET /api/history/reliability` | `storage.reliability_stats()` | `device_id`, `from`, `to` | `{received_count, stored_count, duplicate_count, out_of_order_count, gaps_count, missing_packets_pending, missing_packets_confirmed, boot_count, delivery_rate}` |
-| `GET /api/history/commands/stats` | `storage.command_stats()` | `from`, `to` | `{total, ok, failed, timeout, pending, success_rate, avg_duration_s, min_duration_s, max_duration_s}` |
+| `GET /api/history/reliability` | `storage.reliability_stats()` | `device_id`, `from`, `to` | `{received_count, received_unique, stored_count, stored_unique, duplicate_count, out_of_order_count, gaps_count, missing_packets_pending, missing_packets_confirmed, tx_attempted_count, delivery_rate, delivery_rate_pct, delivery_rate_note, storage_rate, storage_rate_pct, boot_count}` |
+| `GET /api/history/commands/stats` | `storage.command_stats()` | `from`, `to` | `{total, ok, failed, timeout, pending, confirmed_count, success_rate, avg_duration_s, min_duration_s, max_duration_s, avg_confirm_duration_s, min_confirm_duration_s, max_confirm_duration_s}` |
 | `GET /api/history/connections` | `storage.list_connection_events()` | `limit`, `from`, `to` | `[{ts, state, reason, uptime_ms}]` |
 | `GET /api/history/errors` | `storage.list_error_events()` | `limit`, `from`, `to` | `[{ts, type, state, value, threshold, reason, uptime_ms}]` |
+| `GET /api/history` | `storage.history()` | `metric`, `from`, `to` | `[{ts, value}]` |
+| `GET /api/history/page` | `storage.history_page()` | `metric`, `from`, `to`, `limit`, `offset` | `[{ts, value}]` |
+| `GET /api/history/stats` | `storage.history_stats()` | `metric`, `from`, `to` | `{count, avg, min, max}` |
+| `GET /api/history.csv` | `storage.history_csv()` | `metric`, `from`, `to`, `batch_size` | Stream text/csv UTF-8 |
 
 ### 5.3. Bảo vệ trạng thái thời gian thực (`Service._telemetry`)
 
