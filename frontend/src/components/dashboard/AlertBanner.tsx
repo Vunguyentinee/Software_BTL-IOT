@@ -32,8 +32,7 @@ export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry, onAckAlarm 
     pir_warmup_remaining_sec,
     gas_raw,
     gas_alarm,
-    door_safety_lock,
-    safety_mode
+    door_safety_lock
   } = telemetry;
 
   const [acked, setAcked] = useState<boolean>(false);

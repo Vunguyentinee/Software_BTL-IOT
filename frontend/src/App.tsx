@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { StatusHeader } from './components/dashboard/StatusHeader';
 import { AlertBanner } from './components/dashboard/AlertBanner';
 import { MetricCardsGrid } from './components/dashboard/MetricCard';
@@ -10,143 +10,287 @@ import { ActivityLog } from './components/dashboard/ActivityLog';
 import { activityLog } from './services/activityLog';
 import { HistorySection } from './components/charts/HistorySection';
 import { ThresholdModal } from './components/config/ThresholdModal';
-import { HouseDigitalTwin } from './components/digitalTwin';
+import { SmartHouseScene } from './components/SmartHouseScene';
+import { ControlDashboard } from './components/ControlDashboard';
 import { backendService, BackendConnectionStatus } from './services/backendService';
 import { mockService } from './services/mockData';
+import { mqttService, MqttConnectionStatus } from './services/mqttService';
 import { ESP32Telemetry, SystemMode, ScenarioType, DeviceThresholds } from './types/telemetry';
 import { BackendSim } from './types/api';
 import { CheckCircle2, AlertCircle } from 'lucide-react';
+import { httpClient } from './services/api/httpClient';
 
-type AppTab = 'dashboard' | '3d';
+type AppTab = '3d' | 'dashboard';
 
 export const App: React.FC = () => {
-  const [telemetry, setTelemetry] = useState<ESP32Telemetry>(backendService.getCurrentTelemetry());
+  const [telemetry, setTelemetry] = useState<ESP32Telemetry>(mockService.getCurrentTelemetry());
   const [currentScenario, setCurrentScenario] = useState<ScenarioType>('normal');
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
+  const [activeTab, setActiveTab] = useState<AppTab>('3d');
   const [appToast, setAppToast] = useState<{ message: string; isError?: boolean } | null>(null);
   const [backendStatus, setBackendStatus] = useState<BackendConnectionStatus>(backendService.getStatus());
   const [sim, setSim] = useState<BackendSim>(backendService.getSim());
 
+  // Trạng thái 3D Scene Toggles
+  const [isCutaway, setIsCutaway] = useState<boolean>(false);
+  const [showLabels, setShowLabels] = useState<boolean>(true);
+  const [showPirCone, setShowPirCone] = useState<boolean>(false);
+
+  // Trạng thái Chế độ Giả lập (Mock Telemetry Mode)
+  const [isMockMode, setIsMockMode] = useState<boolean>(true);
+
+  // Trạng thái kết nối MQTT
+  const [mqttStatus, setMqttStatus] = useState<MqttConnectionStatus>('disconnected');
+
   useEffect(() => backendService.subscribeSim(setSim), []);
 
-  // 1. Khởi tạo BackendService (WebSocket & HTTP state)
+  // Quản lý vòng đời Mock Timer: Chỉ chạy khi isMockMode = true
+  useEffect(() => {
+    if (isMockMode) {
+      mockService.startSimulation();
+    } else {
+      mockService.stopSimulation();
+    }
+  }, [isMockMode]);
+
+  // 1. Khởi tạo BackendService & MQTT Service
   useEffect(() => {
     backendService.init();
 
-    const unsubscribeStatus = backendService.subscribeStatus((status) => {
+    const unsubscribeBackendStatus = backendService.subscribeStatus((status) => {
       setBackendStatus(status);
+      // Tự động chuyển sang Chế độ Giám sát Thiết bị thật khi phát hiện ESP32 thật online
+      if (status.isESP32Online) {
+        setIsMockMode(false);
+      }
+    });
+
+    // Thử kết nối MQTT Service
+    mqttService.connect();
+    const unsubscribeMqttStatus = mqttService.subscribeStatus((status) => {
+      setMqttStatus(status);
+    });
+
+    const unsubscribeMqttTelemetry = mqttService.subscribeTelemetry((mqttTelem) => {
+      if (!isMockMode) {
+        setTelemetry((prev) => ({
+          ...prev,
+          ...mqttTelem,
+          timestamp: Date.now(),
+        }));
+      }
     });
 
     return () => {
-      unsubscribeStatus();
+      unsubscribeBackendStatus();
+      unsubscribeMqttStatus();
+      unsubscribeMqttTelemetry();
+      mqttService.disconnect();
     };
-  }, []);
+  }, [isMockMode]);
 
-  // 2. Đăng ký luồng Telemetry: Ưu tiên Backend nếu online, fallback sang mockService
+  // 2. Đăng ký luồng Telemetry:
+  // - Nếu ở chế độ Mock hoặc backend không có ESP32 online: mockService là nguồn chính
+  // - Khi ESP32 thực tế online và không bật Mock: backendService cập nhật
   useEffect(() => {
-    activityLog.resetBaseline(); // đổi nguồn dữ liệu: bản telemetry kế tiếp chỉ làm mốc so sánh
-    if (backendStatus.isServerConnected) {
-      const unsubscribe = backendService.subscribe((newTelemetry) => {
-        setTelemetry(newTelemetry);
-        // Chưa có dữ liệu thật từ ESP32 thì chưa ghi nhật ký (tránh coi giá trị khởi tạo là thay đổi)
-        if (backendService.getStatus().isESP32Online) activityLog.observeTelemetry(newTelemetry);
-      });
-      return () => unsubscribe();
-    } else {
-      const unsubscribe = mockService.subscribe((newTelemetry) => {
-        setTelemetry(newTelemetry);
-        activityLog.observeTelemetry(newTelemetry);
-      });
-      return () => unsubscribe();
-    }
-  }, [backendStatus.isServerConnected]);
+    activityLog.resetBaseline();
 
-  // Mất / khôi phục kết nối ESP32 (chỉ sau khi đã nhận trạng thái đầu tiên từ backend)
+    const unsubscribeMock = mockService.subscribe((mockTelem) => {
+      if (isMockMode || !backendStatus.isESP32Online) {
+        setTelemetry(mockTelem);
+        activityLog.observeTelemetry(mockTelem);
+      }
+    });
+
+    let unsubscribeBackend = () => {};
+    if (backendStatus.isServerConnected) {
+      unsubscribeBackend = backendService.subscribe((backendTelem) => {
+        if (backendStatus.isESP32Online && !isMockMode) {
+          setTelemetry(backendTelem);
+          activityLog.observeTelemetry(backendTelem);
+        }
+      });
+    }
+
+    return () => {
+      unsubscribeMock();
+      unsubscribeBackend();
+    };
+  }, [isMockMode, backendStatus.isServerConnected, backendStatus.isESP32Online]);
+
+  // Thông báo thay đổi kết nối
   useEffect(() => {
     if (backendStatus.isServerConnected && backendStatus.lastSeen !== null) {
       activityLog.observeConnection(backendStatus.isESP32Online);
     }
   }, [backendStatus]);
 
-  const handleModeChange = async (newMode: SystemMode) => {
-    try {
-      if (backendStatus.isServerConnected) {
-        await backendService.setSystemMode(newMode);
-        setAppToast({
-          message: `Đã chuyển sang chế độ ${newMode === 'auto' ? 'TỰ ĐỘNG' : 'THỦ CÔNG'}!`,
-        });
-      } else {
-        mockService.setSystemMode(newMode);
-      }
-    } catch (err: any) {
-      setAppToast({
-        message: err?.message || 'Không thể chuyển chế độ vận hành',
-        isError: true,
-      });
-    }
-  };
+  const showToast = useCallback((message: string, isError = false) => {
+    setAppToast({ message, isError });
+    setTimeout(() => {
+      setAppToast((curr) => (curr?.message === message ? null : curr));
+    }, 4500);
+  }, []);
 
-  // Có ESP32 giả lập đang chạy: đổi kịch bản của nó (qua backend), trạng thái mới về qua WebSocket
-  const handleSimScenarioChange = async (scenarioId: string) => {
-    const label = sim.scenarios.find((s) => s.id === scenarioId)?.label ?? scenarioId;
-    try {
-      await backendService.setSimScenario(scenarioId);
-      setAppToast({ message: `Đã gửi kịch bản "${label}" tới ESP32 giả lập.` });
-    } catch (err: any) {
-      setAppToast({
-        message: err?.message === 'simulator_not_active'
-          ? 'ESP32 giả lập không còn chạy. Bật bằng: docker compose --profile sim up -d'
-          : err?.message || 'Không đổi được kịch bản',
-        isError: true,
-      });
-    }
-  };
-
+  // Chuyển đổi kịch bản kiểm thử (Header & ControlDashboard)
   const handleScenarioChange = (scenario: ScenarioType) => {
     setCurrentScenario(scenario);
+    // Bật chế độ giả lập nếu đang ở chế độ thật
+    setIsMockMode(true);
+    mockService.startSimulation();
     mockService.setScenario(scenario);
+    setTelemetry({ ...mockService.getCurrentTelemetry() });
+
     if (backendStatus.isServerConnected) {
-      setAppToast({
-        message: 'Lưu ý: Bạn đang kết nối Backend thực tế. Kịch bản mô phỏng chỉ tác động khi Backend ngắt kết nối.',
+      backendService.setSimScenario(scenario).catch(() => {});
+    }
+    showToast(`Đã kích hoạt kịch bản giả lập: "${scenario}"`);
+  };
+
+  // Điều khiển thiết bị từ ControlDashboard & ControlPanel
+  const handleDeviceCommand = async (
+    device: 'door' | 'fan' | 'led1',
+    action: 'auto' | 'on' | 'off' | 'open' | 'close'
+  ) => {
+    // 1. Kiểm tra ràng buộc khóa an toàn (Safety Interlocks)
+    if (device === 'door' && action === 'close') {
+      if (telemetry.door_safety_lock || telemetry.smoke_alarm || telemetry.gas_alarm) {
+        showToast(telemetry.safety_reason || 'Không thể đóng cửa! Khóa an toàn 60s đang kích hoạt.', true);
+        return;
+      }
+    }
+
+    if (device === 'fan' && action === 'off') {
+      if (telemetry.heat_alarm) {
+        showToast('Không thể tắt quạt! Nhiệt độ đang vượt ngưỡng báo động (>= 40°C).', true);
+        return;
+      }
+    }
+
+    // 2. Tách biệt hoàn toàn luồng Giả lập và Thiết bị thật:
+    if (isMockMode) {
+      // 2a. Chế độ Giả lập: Cập nhật mockService
+      mockService.setDeviceState(device, action);
+      setTelemetry({ ...mockService.getCurrentTelemetry() });
+      showToast(`[Giả lập] Đã áp dụng ${action.toUpperCase()} cho ${device.toUpperCase()}!`);
+    } else {
+      // 2b. Chế độ Thiết bị thật: Optimistic update trạng thái hiển thị
+      setTelemetry((prev) => {
+        const next = { ...prev };
+        if (!next.modes) next.modes = { door: 'auto', fan: 'auto', led1: 'auto' };
+        if (action === 'auto') {
+          next.modes[device] = 'auto';
+        } else {
+          next.modes[device] = 'manual';
+          if (device === 'door') {
+            const isOpen = action === 'open';
+            next.door_command = isOpen ? 'open' : 'closed';
+            next.led2_on = isOpen;
+          } else if (device === 'fan') {
+            next.fan_on = action === 'on';
+          } else if (device === 'led1') {
+            next.led1_on = action === 'on';
+          }
+        }
+        return next;
       });
+
+      // Gửi lệnh xuống phần cứng qua Backend FastAPI hoặc MQTT
+      if (backendStatus.isServerConnected) {
+        try {
+          await httpClient.sendCommand(device, action);
+          showToast(`Đã gửi lệnh ${action.toUpperCase()} tới ${device.toUpperCase()} qua Backend!`);
+        } catch (err: any) {
+          showToast(err?.message || `Lỗi gửi lệnh tới ${device}`, true);
+        }
+      } else if (mqttStatus === 'connected') {
+        try {
+          const ok = await mqttService.publishCommand(device, action);
+          if (ok) {
+            showToast(`Đã publish lệnh ${action.toUpperCase()} tới topic MQTT!`);
+          } else {
+            showToast(`Không thể gửi lệnh MQTT tới ${device}`, true);
+          }
+        } catch (err: any) {
+          showToast(`Lỗi publish MQTT tới ${device}`, true);
+        }
+      } else {
+        showToast(`Không có kết nối phần cứng thật (Backend/MQTT Offline)!`, true);
+      }
+    }
+  };
+
+  // Xác nhận sự cố (Operator ACK)
+  const handleAckAlarm = async () => {
+    try {
+      if (backendStatus.isServerConnected) {
+        const res = await backendService.acknowledgeAlarm();
+        showToast(res.message);
+      } else {
+        // Trong chế độ giả lập offline: Tắt các cờ báo động trên mock
+        mockService.setDeviceState('door', 'auto');
+        mockService.setDeviceState('fan', 'auto');
+        setTelemetry((prev) => ({
+          ...prev,
+          smoke_alarm: false,
+          gas_alarm: false,
+          heat_alarm: false,
+          led3_on: false,
+          buzzer_on: false,
+          door_safety_lock: false,
+          safety_reason: null,
+          active_alarms: [],
+        }));
+        showToast('Đã xác nhận sự cố (Operator ACK trên Giả lập)!');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Không thể xác nhận sự cố', true);
+    }
+  };
+
+  const handleModeChange = async (newMode: SystemMode) => {
+    try {
+      mockService.setSystemMode(newMode);
+      setTelemetry({ ...mockService.getCurrentTelemetry() });
+
+      if (backendStatus.isServerConnected) {
+        await backendService.setSystemMode(newMode);
+        showToast(`Đã chuyển sang chế độ ${newMode === 'auto' ? 'TỰ ĐỘNG' : 'THỦ CÔNG'}!`);
+      } else {
+        showToast(`Chế độ ${newMode === 'auto' ? 'TỰ ĐỘNG' : 'THỦ CÔNG'}`);
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Không thể chuyển chế độ vận hành', true);
     }
   };
 
   const handleSaveThresholds = async (newThresholds: DeviceThresholds) => {
     try {
+      mockService.updateThresholds(newThresholds);
+      setTelemetry({ ...mockService.getCurrentTelemetry() });
+
       if (backendStatus.isServerConnected) {
         await backendService.updateThresholds(newThresholds);
-        setAppToast({
-          message: 'Đã lưu và đồng bộ ngưỡng vận hành xuống Backend FastAPI & ESP32 MQTT!',
-        });
+        showToast('Đã lưu và đồng bộ cấu hình ngưỡng xuống Backend & MQTT!');
       } else {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        mockService.updateThresholds(newThresholds);
-        setAppToast({
-          message: '[Mô phỏng] Đã lưu và đồng bộ cấu hình ngưỡng mới!',
-        });
+        showToast('Đã cập nhật cấu hình ngưỡng mới!');
       }
     } catch (err: any) {
-      setAppToast({
-        message: err?.message || 'Lỗi khi lưu cấu hình ngưỡng',
-        isError: true,
-      });
+      showToast(err?.message || 'Lỗi khi lưu ngưỡng', true);
       throw err;
-    } finally {
-      setTimeout(() => setAppToast(null), 4500);
     }
   };
 
-  // Xác định trạng thái online:
-  // Nếu server connected: dùng trạng thái ESP32 online từ backend
-  // Nếu server offline: dùng logic theo scenario của mock simulator
-  const isOnline = backendStatus.isServerConnected
+  const isOnline = isMockMode
+    ? true
+    : backendStatus.isServerConnected
     ? backendStatus.isESP32Online
+    : mqttStatus === 'connected'
+    ? true
     : currentScenario !== 'esp32_offline';
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans antialiased">
+    <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans antialiased selection:bg-blue-500 selection:text-white">
       {/* 1. STATUS HEADER */}
       <StatusHeader
         systemMode={telemetry.system_mode}
@@ -158,17 +302,24 @@ export const App: React.FC = () => {
         currentScenario={currentScenario}
         onScenarioChange={handleScenarioChange}
         sim={sim}
-        onSimScenarioChange={handleSimScenarioChange}
+        onSimScenarioChange={async (scId) => {
+          handleScenarioChange(scId as ScenarioType);
+          try {
+            await backendService.setSimScenario(scId);
+          } catch {
+            // ignore
+          }
+        }}
         onOpenConfig={() => setIsConfigOpen(true)}
       />
 
       {/* TOAST SYSTEM NOTIFICATION */}
       {appToast && (
         <div
-          className={`fixed top-16 right-4 z-50 p-4 rounded-xl border text-xs shadow-xl flex items-center gap-2.5 animate-in fade-in slide-in-from-top-2 ${
+          className={`fixed top-16 right-4 z-50 p-4 rounded-xl border text-xs shadow-xl flex items-center gap-2.5 animate-in fade-in slide-in-from-top-2 backdrop-blur-md ${
             appToast.isError
-              ? 'bg-rose-50 border-rose-200 text-rose-800'
-              : 'bg-white border-emerald-200 text-emerald-800'
+              ? 'bg-rose-50 border-rose-300 text-rose-800'
+              : 'bg-white border-emerald-300 text-emerald-800'
           }`}
         >
           {appToast.isError ? (
@@ -178,6 +329,7 @@ export const App: React.FC = () => {
           )}
           <span className="font-medium">{appToast.message}</span>
           <button
+            type="button"
             onClick={() => setAppToast(null)}
             className="ml-2 text-slate-400 hover:text-slate-600 text-xs"
           >
@@ -187,81 +339,100 @@ export const App: React.FC = () => {
       )}
 
       {/* MAIN CONTAINER */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col gap-5">
         {/* TAB SWITCHER */}
-        <div className="flex gap-2 mb-5">
-          <button
-            onClick={() => setActiveTab('dashboard')}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
-              activeTab === 'dashboard'
-                ? 'bg-blue-600 text-white shadow-md shadow-blue-200'
-                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            📊 Dashboard
-          </button>
-          <button
-            onClick={() => setActiveTab('3d')}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
-              activeTab === '3d'
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200'
-                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            🏠 Mô hình 3D
-          </button>
+        <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveTab('3d')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                activeTab === '3d'
+                  ? 'bg-blue-600 text-white shadow-sm shadow-blue-200'
+                  : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+              }`}
+            >
+              <span>🏠 Bản Sao Số 3D (Digital Twin)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('dashboard')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                activeTab === 'dashboard'
+                  ? 'bg-blue-600 text-white shadow-sm shadow-blue-200'
+                  : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+              }`}
+            >
+              <span>📊 Giám Sát Chi Tiết & Biểu Đồ</span>
+            </button>
+          </div>
+
+          <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-slate-500">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span>Mô hình nhà cấp 4 (+Y Up, mét)</span>
+          </div>
         </div>
 
         {activeTab === '3d' ? (
-          /* ===== TAB BẢN SAO SỐ 3D ===== */
-          <div className="space-y-6">
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
-              <HouseDigitalTwin
+          /* ===== TAB 1: 3D DIGITAL TWIN + HUD SIDEBAR ===== */
+          <div className="flex flex-col lg:flex-row gap-5 items-start">
+            {/* Cột Trái: Canvas 3D Nhà Cấp 4 */}
+            <div className="flex-1 w-full h-[620px] rounded-2xl overflow-hidden shadow-sm border border-slate-200/90 bg-slate-900">
+              <SmartHouseScene
                 telemetry={telemetry}
-                onModeChange={handleModeChange}
+                isCutaway={isCutaway}
+                showLabels={showLabels}
+                showPirCone={showPirCone}
+                onToggleCutaway={() => setIsCutaway(!isCutaway)}
+                onToggleLabels={() => setShowLabels(!showLabels)}
+                onTogglePirCone={() => setShowPirCone(!showPirCone)}
               />
             </div>
 
-            {/* BẢNG ĐIỀU KHIỂN THIẾT BỊ CHẤP HÀNH TƯƠNG TỰ DASHBOARD */}
-            <ControlPanel
+            {/* Cột Phải: Bảng Điều Khiển & Giám Sát HUD Sidebar */}
+            <ControlDashboard
               telemetry={telemetry}
-              onSwitchToManual={() => handleModeChange('manual')}
-              onSwitchToAuto={() => handleModeChange('auto')}
+              mqttStatus={mqttStatus}
+              isMockMode={isMockMode}
+              onToggleMockMode={(val) => setIsMockMode(val)}
+              onDeviceCommand={handleDeviceCommand}
+              onAckAlarm={handleAckAlarm}
+              onSelectMockScenario={(scId) => handleScenarioChange(scId as ScenarioType)}
+              isBackendConnected={backendStatus.isServerConnected}
             />
           </div>
         ) : (
-          /* ===== TAB DASHBOARD CHÍNH ===== */
-          <>
-            {/* 2. CẢNH BÁO KHẨN CẤP & LỖI CẢM BIẾN */}
+          /* ===== TAB 2: DASHBOARD CHI TIẾT & BIỂU ĐỒ LỊCH SỬ ===== */
+          <div className="flex flex-col gap-6">
+            {/* Banner Cảnh báo */}
             <AlertBanner
               telemetry={telemetry}
-              onAckAlarm={() => setAppToast({ message: 'Đã gửi xác nhận Operator ACK!' })}
+              onAckAlarm={() => showToast('Đã gửi xác nhận Operator ACK!')}
             />
 
-            {/* 3. 4 CARD CHỈ SỐ MÔI TRƯỜNG CHÍNH */}
+            {/* 4 Chỉ số môi trường */}
             <MetricCardsGrid telemetry={telemetry} />
 
-            {/* 4. GIAI ĐOẠN 3: BẢNG ĐIỀU KHIỂN THIẾT BỊ CHẤP HÀNH (CONTROL PANEL) */}
+            {/* Bảng điều khiển */}
             <ControlPanel
               telemetry={telemetry}
               onSwitchToManual={() => handleModeChange('manual')}
               onSwitchToAuto={() => handleModeChange('auto')}
             />
 
-            {/* 5. GIAI ĐOẠN 4: BIỂU ĐỒ LỊCH SỬ & BỘ LỌC THỜI GIAN (HISTORY CHARTS & TIME FILTER) */}
+            {/* Biểu đồ lịch sử */}
             <HistorySection telemetry={telemetry} />
 
-            {/* 6. MÔ PHỎNG LCD 16X2 & TỔNG QUAN NGOẠI VI VẬT LÝ */}
+            {/* Mô phỏng LCD & JSON Telemetry */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <LCDSimulator telemetry={telemetry} />
               <JsonTelemetryViewer telemetry={telemetry} />
             </div>
 
-            {/* 7. NHẬT KÝ THỰC THI LỆNH (COMMAND ACK LOG) */}
+            {/* Nhật ký & Bảng lệnh */}
             <ActivityLog live={backendStatus.isServerConnected} />
             <CommandLogTable />
-          </>
+          </div>
         )}
       </main>
 

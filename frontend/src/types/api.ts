@@ -28,6 +28,11 @@ export interface BackendTelemetry {
   safety_mode?: string | null;
   safety_reason?: string | null;
   control_mode?: string | null;
+  device_id?: string | null;
+  boot_id?: string | null;
+  connection_id?: number | null;
+  gas_sensor_fault?: boolean;
+  active_alarms?: any[];
   modes?: Record<string, BackendMode>;
   ts?: number; // epoch seconds float
 }

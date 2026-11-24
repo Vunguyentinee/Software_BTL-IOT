@@ -56,6 +56,13 @@ export interface ESP32Telemetry {
   system_mode: SystemMode;      // Chế độ tự động / thủ công
   timestamp: number;            // Thời điểm nhận bản tin (ms)
   thresholds: DeviceThresholds; // Cấu hình ngưỡng vận hành hiện tại
+  boot_id?: string | null;      // Mã phiên khởi động của ESP32 (vd: 'boot-7a2f')
+  connection_id?: number | null;// Phiên kết nối MQTT hiện tại (tăng mỗi lần reconnect)
+  device_id?: string | null;    // Tên định danh thiết bị (esp32-home)
+  gas_sensor_fault?: boolean;   // Lỗi cảm biến gas kẹt biên ADC
+  active_alarms?: Array<{ id?: string; type: string; reason?: string; timestamp?: number; severity?: 'warning' | 'critical' }>;
+  mqtt_connected?: boolean;     // Trạng thái kết nối MQTT
+  modes?: Record<string, 'auto' | 'manual'>; // Chế độ từng thiết bị (led1, fan, door)
 }
 
 export interface SystemStatus {

@@ -11,14 +11,15 @@ export interface LCDContentResult {
 const pad16 = (str: string) => str.padEnd(16, ' ').slice(0, 16);
 
 /**
- * Hook dùng chung tạo nội dung LCD 16x2 chuẩn theo firmware ESP32_DigitalTwin_BanGiao.ino:
- * - Chu kỳ lật trang: 4s
+ * Hàm định dạng 2 dòng màn hình LCD 16x2 theo firmware ESP32_DigitalTwin_BanGiao.ino:
+ * - Chuẩn 16 ký tự mỗi dòng
  * - Dòng 1: Cố định thông số DHT11 hoặc báo khói/lỗi
  * - Dòng 2: Ưu tiên Khói -> Nhiệt -> PIR warm-up -> Luân phiên 3 trang
  */
-export function useLCDContent(telemetry: ESP32Telemetry): LCDContentResult {
-  const [currentPage, setCurrentPage] = useState<number>(0);
-
+export function formatLCDLines(
+  telemetry: ESP32Telemetry,
+  currentPage: number = 0
+): { line1: string; line2: string; pageTitle: string } {
   const {
     temperature_c,
     humidity_pct,
@@ -35,14 +36,6 @@ export function useLCDContent(telemetry: ESP32Telemetry): LCDContentResult {
     smoke_alarm,
     smoke_ppm,
   } = telemetry;
-
-  // Luân phiên 3 trang mỗi 4s
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentPage((prev) => (prev + 1) % 3);
-    }, 4000);
-    return () => clearInterval(timer);
-  }, []);
 
   // 1. DÒNG 1
   let line1 = '';
@@ -63,7 +56,7 @@ export function useLCDContent(telemetry: ESP32Telemetry): LCDContentResult {
   } else if (!pir_ready) {
     line2 = `PIR:${pir_warmup_remaining_sec ?? 60}s L1:${led1_on ? 'ON' : 'OFF'}`;
   } else {
-    switch (currentPage) {
+    switch (currentPage % 3) {
       case 0:
         line2 = `L1:${led1_on ? 'ON' : 'OFF'} L2:${led2_on ? 'ON' : 'OFF'}`;
         break;
@@ -82,7 +75,7 @@ export function useLCDContent(telemetry: ESP32Telemetry): LCDContentResult {
     }
   }
 
-  let pageTitle = `Trang ${currentPage + 1}/3`;
+  let pageTitle = `Trang ${(currentPage % 3) + 1}/3`;
   if (smoke_alarm) pageTitle = '🔥 Báo động khói';
   else if (heat_alarm) pageTitle = '🚨 Cảnh báo nhiệt';
   else if (!pir_ready) pageTitle = '⏳ PIR Khởi động';
@@ -90,6 +83,31 @@ export function useLCDContent(telemetry: ESP32Telemetry): LCDContentResult {
   return {
     line1: pad16(line1),
     line2: pad16(line2),
+    pageTitle,
+  };
+}
+
+/**
+ * Hook dùng chung tạo nội dung LCD 16x2 chuẩn theo firmware ESP32_DigitalTwin_BanGiao.ino:
+ * - Chu kỳ lật trang: 4s
+ * - Tự động đồng bộ thời gian thực
+ */
+export function useLCDContent(telemetry: ESP32Telemetry): LCDContentResult {
+  const [currentPage, setCurrentPage] = useState<number>(0);
+
+  // Luân phiên 3 trang mỗi 4s
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentPage((prev) => (prev + 1) % 3);
+    }, 4000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const { line1, line2, pageTitle } = formatLCDLines(telemetry, currentPage);
+
+  return {
+    line1,
+    line2,
     currentPage,
     pageTitle,
   };

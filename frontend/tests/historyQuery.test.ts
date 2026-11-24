@@ -35,8 +35,8 @@ describe('resolveRange', () => {
 });
 
 describe('HISTORY_METRICS', () => {
-  it('chỉ gồm 3 metric backend hỗ trợ thống kê', () => {
-    expect(HISTORY_METRICS.map((m) => m.id)).toEqual(['temperature_c', 'humidity_pct', 'smoke_raw']);
+  it('chỉ gồm các metric backend hỗ trợ thống kê', () => {
+    expect(HISTORY_METRICS.map((m) => m.id)).toEqual(['temperature_c', 'humidity_pct', 'smoke_raw', 'gas_raw']);
   });
 });
 
