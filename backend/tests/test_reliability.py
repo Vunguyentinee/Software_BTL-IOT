@@ -882,3 +882,150 @@ def test_interval_fragmentation_hard_cap():
 
     # Tổng missing packets của các intervals bị đẩy ra khỏi trần được bảo toàn vào unresolved
     assert tracker._unresolved_beyond_window_count > 0
+
+
+# ==============================================================================
+# 27. Test Delivery Rate và tx_count Attempt Tracking
+# ==============================================================================
+def test_delivery_rate_calculation_standard(storage):
+    dev = "esp32-rate"
+    boot = "boot-rate-1"
+    for i in range(1, 11):
+        storage.save_telemetry(tel(100.0 + i, 25.0, device_id=dev, boot_id=boot, seq=i, tx_count=i))
+
+    stats = storage.reliability_stats(device_id=dev)
+    assert stats["tx_attempted_count"] == 10
+    assert stats["received_unique"] == 10
+    assert stats["stored_unique"] == 10
+    assert stats["delivery_rate"] == 1.0
+    assert stats["delivery_rate_pct"] == 100.0
+    assert stats["storage_rate"] == 1.0
+    assert stats["storage_rate_pct"] == 100.0
+
+
+def test_delivery_rate_with_packet_loss(storage):
+    dev = "esp32-loss"
+    boot = "boot-loss-1"
+    # Gửi seq 1, 2, 5, 10 tương ứng tx_count 1, 2, 5, 10 (thất lạc 6 gói: 3, 4, 6, 7, 8, 9)
+    for seq, tx in [(1, 1), (2, 2), (5, 5), (10, 10)]:
+        storage.save_telemetry(tel(200.0 + seq, 26.0, device_id=dev, boot_id=boot, seq=seq, tx_count=tx))
+
+    stats = storage.reliability_stats(device_id=dev)
+    assert stats["tx_attempted_count"] == 10
+    assert stats["received_unique"] == 4
+    assert stats["delivery_rate"] == pytest.approx(0.4, abs=0.01)
+    assert stats["delivery_rate_pct"] == pytest.approx(40.0, abs=0.1)
+
+
+def test_delivery_rate_with_duplicates(storage):
+    dev = "esp32-dup"
+    boot = "boot-dup-1"
+    # 5 gói duy nhất
+    for i in range(1, 6):
+        storage.save_telemetry(tel(300.0 + i, 27.0, device_id=dev, boot_id=boot, seq=i, tx_count=i))
+    # 3 gói duplicate
+    for i in range(1, 4):
+        storage.save_telemetry(tel(310.0 + i, 27.0, device_id=dev, boot_id=boot, seq=i, tx_count=i))
+
+    stats = storage.reliability_stats(device_id=dev)
+    assert stats["tx_attempted_count"] == 5
+    assert stats["received_unique"] == 5  # Duplicates do NOT increase received_unique
+    assert stats["duplicate_count"] == 3
+    assert stats["delivery_rate"] == 1.0
+    assert stats["delivery_rate_pct"] == 100.0
+
+
+def test_delivery_rate_multi_session(storage):
+    dev = "esp32-reboot"
+    # Session 1: 10 gói gửi, 10 nhận
+    for i in range(1, 11):
+        storage.save_telemetry(tel(400.0 + i, 28.0, device_id=dev, boot_id="boot-1", seq=i, tx_count=i))
+    # Session 2: reboot, tx_count reset về 1..20, nhận 18 gói (mất gói 7, 8)
+    for i in range(1, 21):
+        if i in (7, 8):
+            continue
+        storage.save_telemetry(tel(500.0 + i, 28.0, device_id=dev, boot_id="boot-2", seq=i, tx_count=i))
+
+    stats = storage.reliability_stats(device_id=dev)
+    # Total attempted = 10 + 20 = 30
+    assert stats["tx_attempted_count"] == 30
+    # Total received unique = 10 + 18 = 28
+    assert stats["received_unique"] == 28
+    assert stats["delivery_rate"] == pytest.approx(28 / 30, abs=0.001)
+    assert stats["delivery_rate_pct"] == pytest.approx((28 / 30) * 100.0, abs=0.1)
+
+
+def test_delivery_rate_connection_reconnect_does_not_reset(storage):
+    dev = "esp32-conn"
+    boot = "boot-same"
+    # Connection 1: 5 gói
+    for i in range(1, 6):
+        storage.save_telemetry(tel(600.0 + i, 25.0, device_id=dev, boot_id=boot, connection_id=1, seq=i, tx_count=i))
+    # Connection 2: MQTT reconnect, boot_id giữ nguyên, tx_count tiếp tục 6..10
+    for i in range(6, 11):
+        storage.save_telemetry(tel(610.0 + i, 25.0, device_id=dev, boot_id=boot, connection_id=2, seq=i, tx_count=i))
+
+    stats = storage.reliability_stats(device_id=dev)
+    assert stats["tx_attempted_count"] == 10
+    assert stats["received_unique"] == 10
+    assert stats["delivery_rate"] == 1.0
+
+
+def test_delivery_rate_legacy_or_missing_tx_count(storage):
+    dev = "esp32-legacy"
+    boot = "boot-legacy"
+    for i in range(1, 6):
+        # Không truyền tx_count (hoặc None)
+        storage.save_telemetry(tel(700.0 + i, 24.0, device_id=dev, boot_id=boot, seq=i))
+
+    stats = storage.reliability_stats(device_id=dev)
+    assert stats["tx_attempted_count"] is None
+    assert stats["delivery_rate"] is None
+    assert stats["delivery_rate_pct"] is None
+    assert "Missing tx_count" in stats["note"]
+
+
+def test_delivery_rate_inconsistent_anomaly():
+    tracker = ReliabilityTracker()
+    dev = "esp32-anomaly"
+    boot = "boot-anom"
+    # Mô phỏng nhận 5 gói với tx_count = 2 (bất thường)
+    for i in range(1, 6):
+        tracker.record_incoming(dev, boot, i, tx_count=2, now=800.0 + i)
+
+    stats = tracker.get_stats(stored_count=5, device_id=dev)
+    assert stats["tx_attempted_count"] == 2
+    assert stats["received_unique"] == 5
+    # Delivery rate không bị ép về 100%, ghi chú báo bất thường
+    assert stats["delivery_rate"] is None
+    assert "inconsistent" in stats["note"].lower()
+
+
+def test_delivery_rate_restart_consistency(postgres_storage):
+    dev = "esp32-restart"
+    boot = "boot-restart-1"
+    # Lưu 5 gói ban đầu
+    for i in range(1, 6):
+        postgres_storage.save_telemetry(tel(900.0 + i, 27.0, device_id=dev, boot_id=boot, seq=i, tx_count=i))
+
+    # Khởi động instance mới của PostgresStorage (tương đương restart backend)
+    from app.pg_storage import PostgresStorage
+    restarted = PostgresStorage(URL)
+    try:
+        # Gửi tiếp gói seq=6, tx_count=6
+        restarted.save_telemetry(tel(910.0, 27.0, device_id=dev, boot_id=boot, seq=6, tx_count=6))
+        # Gửi duplicate seq=5 (đã có trong DB từ trước restart)
+        restarted.save_telemetry(tel(911.0, 27.0, device_id=dev, boot_id=boot, seq=5, tx_count=5))
+
+        stats = restarted.reliability_stats(device_id=dev)
+        assert stats["tx_attempted_count"] == 6
+        assert stats["received_unique"] == 6
+        assert stats["duplicate_count"] == 1
+        assert stats["delivery_rate"] == 1.0
+    finally:
+        restarted.close()
+
+
+def test_tx_count_validation_negative(storage):
+    with pytest.raises(ValueError, match="tx_count must be a non-negative integer"):
+        storage.save_telemetry(tel(1000.0, 25.0, device_id="esp32-neg", boot_id="b1", seq=1, tx_count=-10))
