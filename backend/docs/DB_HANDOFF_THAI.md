@@ -242,21 +242,26 @@ Nhằm tăng cường độ ổn định cho hệ thống và đáp ứng yêu c
 
 Các điểm cần chốt trước khi nối UI:
 
-- Biểu đồ: chọn metric trong allowlist; `ts` là Unix giây; `value` có thể là số hoặc boolean tùy metric; hàng `NULL` không xuất hiện.
-- Thống kê: UI phải hiển thị trạng thái rỗng khi `count = 0` và `avg/min/max = null`, không hiển thị 0 giả.
-- Thống kê Reliability: UI có thể hiển thị tỷ lệ lưu trữ, số bản tin trùng phát hiện được, số lần mất gói đã xác nhận (`missing_packets_confirmed`) và số gói đang chờ trễ (`missing_packets_pending`).
-- Lịch sử kết nối: Hiển thị bảng online/offline với thời điểm `ts` và nguyên nhân `reason`.
-- Thống kê lệnh: Hiển thị biểu đồ tỷ lệ lệnh thành công và độ trễ phản hồi ACK trung bình/min/max.
+- **Quy ước Endpoint Lịch sử theo Metric**:
+  + `GET /api/history`: Chỉ dùng cho các telemetry metrics v1 (`temperature_c`, `humidity_pct`, `smoke_raw`, `gas_raw`, `fan_on`, `led1_on`...). **Không gọi `/api/history` cho các cờ an toàn boolean V2** (`door_safety_lock`, `gas_sensor_fault`) vì backend sẽ trả về HTTP 422 `unknown metric`.
+  + `GET /api/history/page`: Phân trang OFFSET (`limit`, `offset`), hỗ trợ đầy đủ toàn bộ `HISTORY_METRICS` bao gồm cả `door_safety_lock` và `gas_sensor_fault`.
+  + `GET /api/history.csv`: Xuất dữ liệu lớn dạng Keyset streaming CSV (`(ts, id) > (last_ts, last_id)`), hỗ trợ đầy đủ `HISTORY_METRICS`.
+  + `GET /api/history/stats`: Chỉ tổng hợp số liệu cho các đại lượng đo số học (`temperature_c`, `humidity_pct`, `smoke_raw`, `gas_raw`). Metric boolean sẽ trả về HTTP 422.
+- **Biểu đồ**: chọn metric trong allowlist; `ts` là Unix giây; `value` có thể là số hoặc boolean tùy metric; hàng `NULL` không xuất hiện.
+- **Thống kê**: UI phải hiển thị trạng thái rỗng khi `count = 0` và `avg/min/max = null`, không hiển thị 0 giả.
+- **Thống kê Reliability (`/api/history/reliability`)**:
+  + Hiển thị `storage_rate_pct` (tỷ lệ lưu trữ bền vững), `delivery_rate_pct` (tỷ lệ phân phối runtime), `duplicate_count`, số lần mất gói đã xác nhận (`missing_packets_confirmed`) và số gói đang chờ trễ (`missing_packets_pending`).
+  + **Lưu ý sau Restart**: Sau khi backend khởi động lại, `delivery_rate` sẽ là `null` kèm giải thích trong `delivery_rate_note` (do số nhận mạng lịch sử không lưu bền qua tiến trình), trong khi `storage_rate` ($stored\_unique / tx\_attempted\_count$) vẫn hiển thị chính xác từ dữ liệu PostgreSQL.
+- **Lịch sử kết nối & Lỗi (`/api/history/connections`, `/api/history/errors`)**: Hiển thị bảng sự kiện kết nối và bảng sự kiện lỗi hệ thống (`dht_error`, `gas_sensor_fault`, `alarm_response`...).
+- **Thống kê lệnh (`/api/commands/stats`)**: Hiển thị biểu đồ tỷ lệ lệnh thành công và độ trễ phản hồi ACK trung bình/min/max, thời gian xác nhận trạng thái (`confirmed_ts`).
 
 ## 8. Các vấn đề cần nhóm xác nhận (Pending Team Alignments)
 
-1. **Xác nhận với Hiệu**: Firmware có thể sinh UUID cho `boot_id` và đếm `seq` bắt đầu từ 0 được không? Có thể bổ sung thêm `tx_count` để tính delivery rate chính xác không?
+1. **Xác nhận với Hiệu**: Firmware sinh UUID cho `boot_id` và đếm `seq` bắt đầu từ 0. Cung cấp `tx_count` để tính delivery rate chính xác.
 2. **Xác nhận với Vũ & Đức**: Thống nhất đường dẫn URL và query parameters cho các endpoint reliability, command stats và connection history.
-3. **Xác nhận về cửa vật lý**: Giữ nguyên nguyên tắc `door_command` và command ACK chỉ phản ánh tín hiệu gửi tới servo, không tự ý suy diễn thành công tắc vị trí cửa vật lý.
-
-4. **Xác nhận với Hiệu & Kiên (Cảm biến Gas MQ-2 & An toàn)**:
-   - Trạng thái hiện tại: Database & Storage đã hoàn tất migration, model, validation, phân trang, CSV và thống kê cho `gas_raw`, `gas_alarm`, `gas_sensor_ok`, `safety_mode`, `safety_reason`.
-   - Đang chờ phần cứng/firmware (PENDING HARDWARE VALIDATION): Firmware ESP32 của Hiệu và điều khiển an toàn của Kiên chốt hợp đồng MQTT topic và ngưỡng cảnh báo gas thực tế.
+3. **Xác nhận về cửa và xác nhận lệnh (`confirmed_ts`)**: Giữ nguyên nguyên tắc `door_command` và command ACK chỉ phản ánh tín hiệu gửi tới servo. `confirmed_ts` là thời điểm backend nhận telemetry có trạng thái thiết bị khớp với trạng thái đích của lệnh (state-match confirmation based on telemetry), không phải công tắc hành trình vật lý.
+4. **An toàn Quạt khi Cảnh báo Gas (`safety_override_gas_fan_hold`)**: Khi có cảnh báo gas/khói và khóa an toàn cửa kích hoạt, nghiêm cấm bật/tắt quạt để tránh phóng tia lửa điện gây nổ khí gas rò rỉ. Mọi lệnh điều khiển quạt tay bị từ chối với HTTP 409 `safety_override`.
+5. **Vòng đời `alarm_response`**: Chuỗi cảnh báo gồm `start` (kích hoạt), `retry` (ESP32 gửi lại bản tin sau 3s nếu thiếu ACK backend), `escalated` (leo thang sau 15s nếu người dùng chưa bấm ACK trên web), `end` (kết thúc). Cảnh báo thông thường từ firmware cũ có thể không mang `event_id`.
 
 ## 9. Chạy test PostgreSQL an toàn
 

@@ -104,7 +104,7 @@ ORDER BY device_id, boot_id;
 
 ## 3. Thống kê Lệnh Điều khiển & Độ trễ Xác nhận (Command ACK & Confirm Latency)
 
-Đo lường thời gian đáp ứng ACK và thời gian xác nhận thiết bị đã thực thi vật lý (`confirmed_ts`):
+Đo lường thời gian đáp ứng ACK và thời gian xác nhận trạng thái thiết bị khớp trạng thái đích từ telemetry (`confirmed_ts`):
 
 ```sql
 SELECT

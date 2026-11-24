@@ -197,7 +197,6 @@ class PostgresStorage:
                         r["boot_id"],
                         r["max_seq"],
                         r.get("max_tx_count"),
-                        received_unique=r.get("stored_cnt"),
                     )
         except Exception:
             log.exception("failed to initialize tracker sessions from db")

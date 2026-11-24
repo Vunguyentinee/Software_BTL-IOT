@@ -16,18 +16,19 @@ Chạy thực tế trên môi trường máy phát triển với lệnh:
 
 | Hạng mục | Kết quả |
 |---|---|
-| Toàn bộ test suite | **434 passed, 0 failed** (tăng từ 138 baseline ban đầu và 239 ở PR trước) |
-| Thời gian thực thi | **8.64 giây** |
+| Toàn bộ test suite | **439 passed, 0 failed** (tăng từ 138 baseline ban đầu, 239 ở PR trước và 434 trước Quality Gate) |
+| Thời gian thực thi | **~10 giây** |
 | Cảnh báo | **1 `StarletteDeprecationWarning`** (từ `fastapi.testclient`) |
 | PostgreSQL test database | `smarthome_test` trên cổng `55432` container `btl-iot-testdb` |
-| File kiểm thử độ tin cậy | `backend/tests/test_reliability.py` (52 passed tests) |
+| File kiểm thử độ tin cậy | `backend/tests/test_reliability.py` (55 passed tests) |
 | File kiểm thử PostgreSQL | `backend/tests/test_postgres_storage.py` (37 passed tests) |
+| File kiểm thử REST API | `backend/tests/test_api.py` (42 passed tests) |
 
-### Chi tiết các nhóm kiểm thử và 37 kịch bản xác minh mới:
+### Chi tiết các nhóm kiểm thử và 42 kịch bản xác minh độ tin cậy:
 
 | Nhóm chức năng | Số test | File test / Phương thức kiểm thử | Nội dung xác minh thực tế |
 |---|---:|---|---|
-| API & WebSockets | 40 | `test_api.py` | State, command endpoints, config endpoints, WS snapshot & broadcast |
+| API & WebSockets | 42 | `test_api.py` | State, command endpoints, config endpoints, WS snapshot & broadcast, metric filter consistency, reliability schema |
 | Authentication & Security | 35 | `test_auth.py` | JWT token, login, role-based access control |
 | Command ACK V2 | 14 | `test_cmd_ack_v2.py` | Two-phase command confirm, timeout, duplicate ACK |
 | Database Outage Resilience | 8 | `test_db_outage.py` | DB failure resilience, reconnect, queue handling |
@@ -37,11 +38,11 @@ Chạy thực tế trên môi trường máy phát triển với lệnh:
 | Data Models | 15 | `test_models.py` | Telemetry model (kèm gas/smoke, safety_mode...), thresholds hysteresis |
 | MQTT Bridge | 14 | `test_mqtt_bridge.py` | Routing topic, retained config/set, publish cmd |
 | Service Commands & Config | 19 | `test_service_commands.py`, `test_service_config.py` | Command pending/ok/timeout, config state machine |
-| Service Ingest & Simulator | 73 | `test_service_ingest.py`, `test_service_sim.py`, `test_simulator*.py` | Telemetry ingest, online timeout, fake esp32 simulator V1/V2 |
+| Service Ingest & Simulator | 70 | `test_service_ingest.py`, `test_service_sim.py`, `test_simulator*.py` | Telemetry ingest, online timeout, fake esp32 simulator V1/V2 |
 | Storage Baseline (Memory) | 49 | `test_storage.py` | Stats, pagination, streaming CSV, gas_raw history/stats, V2 metrics & confirm latency |
 | PostgreSQL Storage | 37 | `test_postgres_storage.py` | Telemetry V2 (7 cột), Event lifecycle, Command confirmed_ts, error events, migration idempotent |
-| **Reliability & Delivery Rate** | 52 | `test_reliability.py` | Delivery rate từ tx_count, multi-session, packet loss, duplicate detection, sliding window, LRU eviction |
-| **TỔNG CỘNG** | **434** | **Toàn bộ 21 file test** | **434 passed (100% PASS)** |
+| **Reliability & Delivery Rate** | 55 | `test_reliability.py` | Delivery rate từ tx_count, multi-session, packet loss, duplicate detection, sliding window, LRU eviction |
+| **TỔNG CỘNG** | **439** | **Toàn bộ 21 file test** | **439 passed (100% PASS)** |
 | **Bounded Memory (All Sessions with Gaps)** | 1 | `test_reliability.py::test_bounded_memory_all_sessions_have_pending_gaps` | Giới hạn cứng session LRU, evict sạch gap intervals của sessions cũ, kết chuyển missing packets sang confirmed |
 | **Interval Fragmentation Hard Cap** | 1 | `test_reliability.py::test_interval_fragmentation_hard_cap` | Giới hạn cứng số pending gap intervals khi bị bão phân mảnh late arrival |
 | **Telemetry Legacy Compatibility** | 2 | `test_reliability.py::test_legacy_telemetry_missing_boot_and_seq_accepted` | Chấp nhận bản tin thiếu `boot_id`/`seq`, không gãy lịch sử hay stats |
@@ -69,7 +70,12 @@ Chạy thực tế trên môi trường máy phát triển với lệnh:
 | **Device Scoping & Window Stats** | 1 | `test_reliability.py::test_reliability_stats_device_scoping_and_time_scope` | Tách biệt counters theo từng device_id và công bố rõ ràng phạm vi đo lường |
 | **Session Eviction LRU** | 1 | `test_reliability.py::test_bounded_memory_many_boot_sessions_lru` | Giới hạn 100 sessions trong RAM, tự động giải phóng session cũ khi reboot liên tục |
 | **Service on_event DB Resilience** | 1 | `test_reliability.py::test_service_on_event_does_not_crash_when_db_fails` | DB lỗi lưu trữ không làm sập luồng xử lý sự kiện MQTT và WebSocket broadcast |
-| **TỔNG CỘNG** | **237** | **Toàn bộ 12 file test** | **237 passed (100% PASS)** |
+| **Restart Received Non-Conflation** | 1 | `test_reliability.py::test_restart_does_not_conflate_stored_with_historical_received` | 100 gửi, 98 nhận, 95 lưu DB -> restart: không gán received_unique=95, delivery_rate=None, storage_rate=0.95 |
+| **Bounded Eviction Ratio Preservation** | 1 | `test_reliability.py::test_bounded_memory_session_eviction_preserves_tx_attempted_and_delivery_rate` | Evict 5 sessions khỏi RAM: tx_attempted_count bảo toàn đủ 100, delivery_rate=1.0 không bị trôi |
+| **Time Window Delivery Rate Scope** | 1 | `test_reliability.py::test_time_window_returns_delivery_rate_none` | Truy vấn có start/end trả delivery_rate=None và storage_rate=None vì tx_attempted là lũy kế phiên |
+| **API History Metric Filtering** | 1 | `test_api.py::test_history_metric_filtering_consistency` | /api/history từ chối cờ boolean (422), /api/history/page và .csv chấp nhận, /api/history/stats từ chối |
+| **API Reliability Endpoint Fields** | 1 | `test_api.py::test_history_reliability_endpoint_fields` | Kiểm chứng đầy đủ các trường delivery_rate, storage_rate, notes trong JSON response |
+| **TỔNG CỘNG** | **439** | **Toàn bộ 21 file test** | **439 passed (100% PASS)** |
 
 ## 3. Thực nghiệm trên môi trường demo
 
@@ -132,14 +138,14 @@ Mỗi ảnh/log nên có thời gian, tên container/database, câu lệnh đã 
 
 ## 7. Kết luận kiểm thử
 
-- **Bộ test tự động**: Đạt **434 passed** (100% PASS), bao gồm toàn bộ 21 test suites: 52 tests trong `test_reliability.py`, 37 tests trong `test_postgres_storage.py`, 49 tests trong `test_storage.py`, cùng các suites API, Auth, Simulator V2 và Firmware Contract.
+- **Bộ test tự động**: Đạt **439 passed** (100% PASS), bao gồm toàn bộ 21 test suites: 55 tests trong `test_reliability.py`, 37 tests trong `test_postgres_storage.py`, 42 tests trong `test_api.py`, 49 tests trong `test_storage.py`, cùng các suites Auth, Simulator V2 và Firmware Contract.
 - **Mở rộng Telemetry V2**: Xác minh migration PostgreSQL idempotent cho 7 cột mới (`connection_id`, `control_mode`, `backend_state`, `tx_count`, `door_safety_lock`, `gas_sensor_fault`, `active_alarms`), chỉ mục `telemetry_device_boot_conn_idx`, tương thích 100% dữ liệu legacy (`NULL`).
 - **Tỷ lệ Phân phối Chính xác (Precision Delivery Rate)**: Xác minh tính toán `delivery_rate` ($received\_unique / tx\_attempted\_count$) và `storage_rate` ($stored\_unique / tx\_attempted\_count$) theo session `(device_id, boot_id)`, không bị duplicate làm sai lệch, không reset khi reconnect MQTT, không clamp sai 100% và trả về `None` khi thiếu `tx_count` hoặc counter bất thường.
 - **Vòng đời Sự kiện V2 (Event Lifecycle)**: Xác minh bảng `events` hỗ trợ `event_id`, `alarm` với các pha (`start`, `retry`, `escalated`, `end`), `event_id` không bị lỗi unique ràng buộc, chỉ mục `events_event_id_idx` hoạt động hiệu quả.
-- **Xác nhận Lệnh (Confirmed TS)**: Bảng `commands` lưu `confirmed_ts`, thống kê `command_stats` đo lường `confirmed_count`, `avg_confirm_duration_s`, min/max confirm latency chuẩn xác.
+- **Xác nhận Lệnh (Confirmed TS)**: Bảng `commands` lưu `confirmed_ts` (thời điểm nhận telemetry khớp trạng thái đích), thống kê `command_stats` đo lường `confirmed_count`, `avg_confirm_duration_s`, min/max confirm latency chuẩn xác.
 - **Kiểm thử độ tin cậy & bất biến**: Xác minh thành công tính tương thích dữ liệu legacy (không có sequence/boot_id/gas), khả năng chống trùng bản tin bằng partial unique index, bảo vệ trạng thái runtime không bị bản tin đến muộn ghi đè, phát hiện sequence gap và phân loại chính xác giữa pending gaps (trong cửa sổ 10s) và unresolved gaps beyond observation window (ngoài 10s).
 - **Chống OOM với Huge Sequence Gap**: Xác minh cơ chế interval-based gap handling xử lý tức thì gap 50.000 và 100.000.000 gói tin mà không gây MemoryError, đồng thời hỗ trợ late arrival bù gap chính xác.
-- **Giới hạn bộ nhớ & An toàn luồng**: Xác minh cơ chế sliding window, ring buffer, hard cap interval fragmentation và LRU session eviction (mặc định trần 500 sessions) không để RAM tăng không giới hạn; xác minh thread-safe với đa luồng đồng thời.
-- **Tính nhất quán sau Restart**: Phối hợp kiểm tra duplicate giữa PostgreSQL và Tracker sau restart (kể cả case `seq == max_seq`), phục hồi `received_unique` từ DB, ngăn chặn hiện tượng đếm đúp out-of-order và gap rác.
+- **Giới hạn bộ nhớ & An toàn luồng**: Xác minh cơ chế sliding window, ring buffer, hard cap interval fragmentation và LRU session eviction (mặc định trần 500 sessions) không để RAM tăng không giới hạn; bảo toàn biến tích lũy `tx_attempted` và `received_unique` để tỷ lệ không bị trôi khi dọn RAM; xác minh thread-safe với đa luồng đồng thời.
+- **Tính nhất quán sau Restart**: Phối hợp kiểm tra duplicate giữa PostgreSQL và Tracker sau restart (kể cả case `seq == max_seq`), phân biệt rõ ràng giữa runtime received count và persisted stored count, không gán bừa `received_unique = stored_count` sau crash, trả về `delivery_rate = null` và tính chính xác `storage_rate` từ PostgreSQL, ngăn chặn hiện tượng đếm đúp out-of-order và gap rác.
 - **Khả năng phục hồi Realtime & DB Failure**: Xác minh lỗi lưu DB không làm sập luồng realtime và không làm gián đoạn WebSocket broadcast hiển thị nhịp tim (cả telemetry và events).
 - **Tính minh bạch số liệu**: Mọi chỉ số delivery rate và latency đều dựa trên đo đạc thực nghiệm có thể đối soát bằng các truy vấn SQL độc lập trong tài liệu `DB_REPRODUCIBILITY.md`.

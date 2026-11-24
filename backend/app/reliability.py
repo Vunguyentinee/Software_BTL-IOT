@@ -63,6 +63,17 @@ class ReliabilityTracker:
         self._unresolved_beyond_window_count: int = 0
         self._total_gap_events_count: int = 0
 
+        # Lưu vết session phục hồi từ DB sau restart (không có received_unique lịch sử bền vững)
+        self._db_restored_sessions: set[tuple[Optional[str], Optional[str]]] = set()
+
+        # Bộ tích lũy giá trị khi session bị dọn dẹp khỏi RAM (LRU eviction)
+        # để tỷ lệ numerator/denominator không bị trôi lệch
+        self._evicted_tx_attempted_total: int = 0
+        self._evicted_tx_attempted_by_device: dict[Optional[str], int] = defaultdict(int)
+        self._evicted_received_unique_total: int = 0
+        self._evicted_received_unique_by_device: dict[Optional[str], int] = defaultdict(int)
+        self._evicted_sessions_count: int = 0
+
         # Phân theo device_id
         self._received_by_device: dict[Optional[str], int] = defaultdict(int)
         self._received_unique_by_device: dict[Optional[str], int] = defaultdict(int)
@@ -111,39 +122,54 @@ class ReliabilityTracker:
     def init_session(self, device_id: Optional[str], boot_id: Optional[str],
                      max_seq: Optional[int], max_tx_count: Optional[int] = None,
                      received_unique: Optional[int] = None) -> None:
-        """Nạp lại trạng thái session từ database sau khi restart."""
+        """Nạp lại trạng thái session từ database sau khi restart.
+
+        Lưu ý kiến trúc:
+        - max_seq và max_tx_count được nạp để nhận diện duplicate và out-of-order chính xác.
+        - Không gán received_unique = stored_count vì sau crash/restart, số bản tin nhận được
+          tại tầng mạng trong quá khứ không lưu bền. received_unique chỉ đếm các bản tin nhận
+          tại tiến trình backend hiện tại.
+        - Session được đánh dấu vào _db_restored_sessions để get_stats() không suy đoán bừa
+          delivery_rate lịch sử, trong khi storage_rate vẫn tính chính xác từ PostgreSQL.
+        """
         with self._lock:
             key = (device_id, boot_id)
+            self._db_restored_sessions.add(key)
             if max_seq is not None:
                 self._session_max_seq[key] = max_seq
                 self._session_last_active[key] = time.time()
                 self._evict_oldest_session_if_needed()
             if max_tx_count is not None and max_tx_count > 0:
                 self._session_max_tx_count[key] = max_tx_count
-            if received_unique is not None and received_unique > 0:
-                diff = received_unique - self._received_unique_by_session.get(key, 0)
-                if diff > 0:
-                    self._received_unique_by_session[key] = received_unique
-                    self._received_unique_count += diff
-                    if device_id:
-                        self._received_unique_by_device[device_id] += diff
 
     def _evict_oldest_session_if_needed(self) -> None:
         """Giới hạn số lượng session theo dõi trong RAM (LRU eviction)."""
         while len(self._session_last_active) > self.max_sessions:
             oldest_key = min(self._session_last_active.keys(), key=lambda k: self._session_last_active[k])
+            dev, boot = oldest_key
             self._session_last_active.pop(oldest_key, None)
             self._session_max_seq.pop(oldest_key, None)
-            self._session_max_tx_count.pop(oldest_key, None)
+
+            evicted_tx = self._session_max_tx_count.pop(oldest_key, None)
+            if evicted_tx is not None and evicted_tx > 0:
+                self._evicted_tx_attempted_total += evicted_tx
+                self._evicted_tx_attempted_by_device[dev] += evicted_tx
+
             self._session_min_tx_count.pop(oldest_key, None)
-            self._received_unique_by_session.pop(oldest_key, None)
+
+            evicted_rx = self._received_unique_by_session.pop(oldest_key, None)
+            if evicted_rx is not None and evicted_rx > 0:
+                self._evicted_received_unique_total += evicted_rx
+                self._evicted_received_unique_by_device[dev] += evicted_rx
+
             self._session_seen_seqs.pop(oldest_key, None)
             self._session_seen_deque.pop(oldest_key, None)
+            self._db_restored_sessions.discard(oldest_key)
+            self._evicted_sessions_count += 1
 
             # Dọn sạch các pending gap intervals của session bị evict
             # để đảm bảo không rò rỉ RAM từ các session cũ không còn hoạt động.
             # Số gói missing của session này được chuyển an toàn sang unresolved counter.
-            dev, boot = oldest_key
             retained: list[dict] = []
             for interval in self._pending_gap_intervals:
                 if interval.get("device_id") == dev and interval.get("boot_id") == boot:
@@ -488,13 +514,19 @@ class ReliabilityTracker:
         with self._lock:
             current_time = time.time() if now is None else now
 
-            has_tx = bool(
+            has_active_tx = bool(
                 self._session_max_tx_count
                 and any(
                     (device_id is None or dev == device_id)
                     for (dev, boot) in self._session_max_tx_count.keys()
                 )
             )
+            has_evicted_tx = bool(
+                self._evicted_tx_attempted_total > 0
+                if device_id is None
+                else self._evicted_tx_attempted_by_device[device_id] > 0
+            )
+            has_tx = has_active_tx or has_evicted_tx
 
             # Chọn counters đúng theo device_id
             if device_id is not None:
@@ -504,10 +536,13 @@ class ReliabilityTracker:
                 out_of_order = self._out_of_order_by_device[device_id]
                 gaps_count = self._gap_events_count_by_device[device_id]
                 unresolved_base = self._unresolved_beyond_window_by_device[device_id]
-                tx_attempted = sum(
+                active_tx = sum(
                     cnt for (dev, boot), cnt in self._session_max_tx_count.items()
                     if dev == device_id
-                ) if has_tx else None
+                )
+                evicted_tx = self._evicted_tx_attempted_by_device[device_id]
+                tx_attempted = (active_tx + evicted_tx) if has_tx else None
+                has_restored = any(k[0] == device_id for k in self._db_restored_sessions)
             else:
                 received = self._received_count
                 received_unique = self._received_unique_count
@@ -515,7 +550,10 @@ class ReliabilityTracker:
                 out_of_order = self._out_of_order_count
                 gaps_count = self._total_gap_events_count
                 unresolved_base = self._unresolved_beyond_window_count
-                tx_attempted = sum(self._session_max_tx_count.values()) if has_tx else None
+                active_tx = sum(self._session_max_tx_count.values())
+                evicted_tx = self._evicted_tx_attempted_total
+                tx_attempted = (active_tx + evicted_tx) if has_tx else None
+                has_restored = bool(self._db_restored_sessions)
 
             pending = 0
             confirmed = unresolved_base
@@ -544,28 +582,51 @@ class ReliabilityTracker:
             delivery_rate_pct = None
             storage_rate = None
             storage_rate_pct = None
+            delivery_rate_note = None
 
             if tx_attempted is not None and tx_attempted > 0:
-                d_rate = float(received_unique / tx_attempted)
-                if d_rate <= 1.0:
-                    delivery_rate = round(d_rate, 4)
-                    delivery_rate_pct = round(d_rate * 100, 2)
+                if start is not None or end is not None:
+                    delivery_rate = None
+                    delivery_rate_pct = None
+                    storage_rate = None
+                    storage_rate_pct = None
                     delivery_rate_note = (
-                        "Observed-prefix delivery rate: received_unique / tx_attempted_count. "
-                        "Phan anh ty le phan phoi toi thieu quan sat duoc qua cac phien boot."
+                        "Delivery rate and storage rate are unavailable for time-window queries "
+                        "because tx_attempted is cumulative session-based; query without time window for session rates."
                     )
-                else:
+                elif has_restored:
                     delivery_rate = None
                     delivery_rate_pct = None
                     delivery_rate_note = (
-                        f"Inconsistent counter: received_unique ({received_unique}) > "
-                        f"tx_attempted ({tx_attempted}). Co the do simulator/firmware reset sequence bat thuong."
+                        "Historical received_unique is not durable across backend restart; "
+                        "delivery_rate is unavailable for restored sessions. "
+                        "Storage rate (stored_unique / tx_attempted_count) provides durable end-to-end reliability."
                     )
+                    if stored_count <= tx_attempted:
+                        s_rate = float(stored_count / tx_attempted)
+                        storage_rate = round(s_rate, 4)
+                        storage_rate_pct = round(s_rate * 100, 2)
+                else:
+                    if received_unique <= tx_attempted:
+                        d_rate = float(received_unique / tx_attempted)
+                        delivery_rate = round(d_rate, 4)
+                        delivery_rate_pct = round(d_rate * 100, 2)
+                        delivery_rate_note = (
+                            "Observed-prefix delivery rate: received_unique / tx_attempted_count. "
+                            "Phan anh ty le phan phoi toi thieu quan sat duoc qua cac phien boot."
+                        )
+                    else:
+                        delivery_rate = None
+                        delivery_rate_pct = None
+                        delivery_rate_note = (
+                            f"Inconsistent counter: received_unique ({received_unique}) > "
+                            f"tx_attempted ({tx_attempted}). Co the do simulator/firmware reset sequence bat thuong."
+                        )
 
-                if stored_count <= tx_attempted:
-                    s_rate = float(stored_count / tx_attempted)
-                    storage_rate = round(s_rate, 4)
-                    storage_rate_pct = round(s_rate * 100, 2)
+                    if stored_count <= tx_attempted:
+                        s_rate = float(stored_count / tx_attempted)
+                        storage_rate = round(s_rate, 4)
+                        storage_rate_pct = round(s_rate * 100, 2)
             else:
                 delivery_rate = None
                 delivery_rate_pct = None

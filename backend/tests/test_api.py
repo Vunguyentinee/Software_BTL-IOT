@@ -224,3 +224,34 @@ def test_post_sim_scenario_unknown_is_422(client, service, publisher):
     assert client.post("/api/sim/scenario", json={"scenario": "lava"}).status_code == 422
     assert client.post("/api/sim/scenario", json={}).status_code == 422
     assert publisher.sim_scenarios == []
+
+
+def test_history_metric_filtering_consistency(client):
+    # GET /api/history từ chối các boolean safety flags mới V2 (422)
+    assert client.get("/api/history", params={"metric": "door_safety_lock"}).status_code == 422
+    assert client.get("/api/history", params={"metric": "gas_sensor_fault"}).status_code == 422
+
+    # GET /api/history/stats chỉ hỗ trợ số (temperature_c, humidity_pct, smoke_raw, gas_raw)
+    assert client.get("/api/history/stats", params={"metric": "door_safety_lock"}).status_code == 422
+
+    # GET /api/history/page và /api/history.csv hỗ trợ đầy đủ HISTORY_METRICS (gồm cả boolean flags)
+    assert client.get("/api/history/page", params={"metric": "door_safety_lock"}).status_code == 200
+    assert client.get("/api/history/page", params={"metric": "gas_sensor_fault"}).status_code == 200
+    assert client.get("/api/history.csv", params={"metric": "door_safety_lock"}).status_code == 200
+    assert client.get("/api/history.csv", params={"metric": "gas_sensor_fault"}).status_code == 200
+
+
+def test_history_reliability_endpoint_fields(client):
+    r = client.get("/api/history/reliability")
+    assert r.status_code == 200
+    data = r.json()
+    expected_fields = {
+        "received_count", "received_unique", "stored_count", "stored_unique",
+        "duplicate_count", "out_of_order_count", "gaps_count",
+        "missing_packets_pending", "missing_packets_confirmed",
+        "unresolved_gaps_beyond_window", "tx_attempted_count",
+        "delivery_rate", "delivery_rate_pct", "delivery_rate_note",
+        "storage_rate", "storage_rate_pct", "boot_count", "late_window_s",
+        "gap_events",
+    }
+    assert expected_fields.issubset(data.keys())

@@ -1019,11 +1019,87 @@ def test_delivery_rate_restart_consistency(postgres_storage):
 
         stats = restarted.reliability_stats(device_id=dev)
         assert stats["tx_attempted_count"] == 6
-        assert stats["received_unique"] == 6
+        assert stats["received_unique"] == 1  # Chỉ đếm bản tin nhận tại process mới sau restart!
         assert stats["duplicate_count"] == 1
-        assert stats["delivery_rate"] == 1.0
+        assert stats["stored_count"] == 6
+        assert stats["delivery_rate"] is None  # Session phục hồi từ DB không thể biết received_unique lịch sử
+        assert "Historical received_unique is not durable across backend restart" in stats["delivery_rate_note"]
+        assert stats["storage_rate"] == 1.0  # 6 stored / 6 attempted = 1.0
+        assert stats["storage_rate_pct"] == 100.0
     finally:
         restarted.close()
+
+
+def test_restart_does_not_conflate_stored_with_historical_received(postgres_storage):
+    dev = "esp32-conflate-regression"
+    boot = "boot-conf-1"
+    # Giả lập: ESP32 phát 100 gói. Backend nhận 98 gói. Nhưng DB chỉ lưu được 95 gói.
+    # Lưu trực tiếp 95 gói vào DB với max_seq=98, max_tx_count=100
+    for i in range(1, 96):
+        s = 98 if i == 95 else i
+        tx = 100 if i == 95 else i
+        postgres_storage.save_telemetry(tel(1100.0 + i, 26.0, device_id=dev, boot_id=boot, seq=s, tx_count=tx))
+
+    from app.pg_storage import PostgresStorage
+    restarted = PostgresStorage(URL)
+    try:
+        stats = restarted.reliability_stats(device_id=dev)
+        # Số bản ghi lưu bền trong DB là 95
+        assert stats["stored_count"] == 95
+        assert stats["stored_unique"] == 95
+        # Tuyệt đối KHÔNG gán received_unique = 95
+        assert stats["received_unique"] == 0
+        assert stats["received_unique"] != 95
+        # tx_attempted_count lấy từ max_tx_count = 100
+        assert stats["tx_attempted_count"] == 100
+        # delivery_rate = None vì không đo được số gói nhận lịch sử qua restart
+        assert stats["delivery_rate"] is None
+        assert "Historical received_unique is not durable across backend restart" in stats["delivery_rate_note"]
+        # storage_rate vẫn tính chính xác: 95 / 100 = 0.95
+        assert stats["storage_rate"] == 0.95
+        assert stats["storage_rate_pct"] == 95.0
+    finally:
+        restarted.close()
+
+
+def test_bounded_memory_session_eviction_preserves_tx_attempted_and_delivery_rate():
+    # Giới hạn tối đa 5 sessions trong RAM
+    tracker = ReliabilityTracker(max_sessions=5)
+    dev = "esp32-evict-rate"
+
+    # Tạo 10 sessions, mỗi session gửi 10 gói (tx_count 1..10)
+    for s in range(10):
+        boot = f"boot-sess-{s}"
+        for i in range(1, 11):
+            tracker.record_incoming(dev, boot, i, tx_count=i, now=2000.0 + s * 100 + i)
+
+    # Kiểm tra 5 session cũ đã bị dọn khỏi RAM để chống OOM
+    assert len(tracker._session_last_active) == 5
+    # Tuy nhiên tx_attempted và received_unique phải được bảo toàn, không bị lệch
+    stats = tracker.get_stats(stored_count=100, device_id=dev)
+    assert stats["tx_attempted_count"] == 100  # 10 sessions * 10 = 100
+    assert stats["received_unique"] == 100
+    assert stats["delivery_rate"] == 1.0
+    assert stats["storage_rate"] == 1.0
+    assert stats["delivery_rate_pct"] == 100.0
+
+
+def test_time_window_returns_delivery_rate_none():
+    tracker = ReliabilityTracker()
+    dev = "esp32-window"
+    boot = "boot-win"
+    for i in range(1, 11):
+        tracker.record_incoming(dev, boot, i, tx_count=i, now=3000.0 + i)
+
+    # Không lọc thời gian -> delivery_rate có giá trị
+    stats_all = tracker.get_stats(stored_count=10, device_id=dev)
+    assert stats_all["delivery_rate"] == 1.0
+
+    # Có lọc thời gian start/end -> delivery_rate = None vì tx_attempted là lũy kế phiên
+    stats_win = tracker.get_stats(stored_count=5, device_id=dev, start=3001.0, end=3005.0)
+    assert stats_win["delivery_rate"] is None
+    assert stats_win["storage_rate"] is None
+    assert "time-window" in stats_win["delivery_rate_note"].lower()
 
 
 def test_tx_count_validation_negative(storage):

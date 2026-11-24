@@ -126,7 +126,7 @@ erDiagram
         TEXT status "NOT NULL"
         TIMESTAMPTZ sent_ts "NOT NULL"
         TIMESTAMPTZ ack_ts
-        TIMESTAMPTZ confirmed_ts "Mới V2: thời điểm xác nhận thiết bị thực thi vật lý"
+        TIMESTAMPTZ confirmed_ts "Mới V2: thời điểm nhận telemetry khớp trạng thái đích của lệnh (state-match confirmation based on telemetry)"
         TEXT detail
         TIMESTAMPTZ ts "NOT NULL"
     }
@@ -307,13 +307,12 @@ ORDER BY gap_start;
 
 Thời gian đáp ứng của lệnh điều khiển thiết bị:
 $$\Delta T_{\text{ack}, i} = T_{\text{ack}, i} - T_{\text{sent}, i} \quad (\text{với các lệnh có trạng thái } ok \text{ hoặc } failed)$$
-Thời gian xác nhận thực thi vật lý:
+Thời gian xác nhận khớp trạng thái đích từ telemetry (state-match confirmation based on telemetry):
 $$\Delta T_{\text{confirm}, i} = T_{\text{confirmed}, i} - T_{\text{sent}, i} \quad (\text{với các lệnh có } confirmed\_ts)$$
 Chỉ số độ tin cậy lệnh:
 $$R_{\text{command}} = \frac{N_{ok}}{N_{\text{total}}}$$
 Thời gian trễ xác nhận trung bình, nhỏ nhất, lớn nhất:
 $$\overline{\Delta T_{\text{confirm}}} = \frac{1}{K} \sum_{i=1}^K \Delta T_{\text{confirm}, i}, \quad \min(\Delta T_{\text{confirm}, i}), \quad \max(\Delta T_{\text{confirm}, i})$$
-Triển khai bằng SQL tổng hợp tối ưu trên bảng `commands` qua method `storage.command_stats()`.
 Triển khai bằng SQL tổng hợp tối ưu trên bảng `commands` qua method `storage.command_stats()`.
 
 ### 8.6. Tính ổn định, An toàn luồng và Giới hạn bộ nhớ (Production-Ready Architecture)
@@ -323,6 +322,8 @@ Triển khai bằng SQL tổng hợp tối ưu trên bảng `commands` qua metho
    - Danh sách sự kiện gap `_gap_events` được giới hạn bằng Ring Buffer `deque(maxlen=1000)`. Tổng số gap trong suốt vòng đời được bảo toàn trong biến tích lũy `_total_gap_events_count`.
    - Các sequence gap được quản lý theo mô hình **Interval-based** `[start_seq, end_seq, detected_at]`, tiêu thụ bộ nhớ cố định $O(k)$ với $k$ là số khoảng rời rạc (kể cả khi khoảng gap lên tới hàng triệu sequence).
    - Quản lý phiên hoạt động theo cơ chế **LRU Session Eviction** với trần tối đa 500 boot sessions đồng thời. Khi vượt ngưỡng, session cũ nhất bị evict, toàn bộ gap intervals của session đó được dọn sạch khỏi RAM và missing packets được kết chuyển an toàn sang bộ đếm `unresolved_beyond_window`.
+   - **Bảo toàn tỷ lệ khi Eviction**: Giá trị `tx_attempted` và `received_unique` của session bị evict được tích lũy vào `_evicted_tx_attempted_*` và `_evicted_received_unique_*` để tỷ lệ $delivery\_rate$ và $storage\_rate$ không bị trôi lệch khi giải phóng RAM.
+   - **Nhất quán sau Restart**: Sau khi backend khởi động lại, `_init_tracker_sessions` chỉ nạp `max_seq` và `max_tx_count` từ PostgreSQL để chống duplicate / out-of-order, tuyệt đối không gán $received\_unique = stored\_count$. Với các session được phục hồi sau restart, $delivery\_rate$ trả về `null` kèm ghi chú hạn chế, trong khi $storage\_rate = stored\_unique / tx\_attempted\_count$ vẫn đo lường độ tin cậy lưu bền chính xác.
    - Áp dụng cơ chế **Hard Cap cưỡng chế** cho `_pending_gap_intervals` (mặc định 1.000 intervals) để chống bão phân mảnh (fragmentation) khi nhận nhiều bản tin đến muộn xen kẽ trong thời gian ngắn.
 
 2. **An toàn đa luồng (Thread-Safety)**:

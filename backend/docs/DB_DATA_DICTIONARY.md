@@ -94,7 +94,7 @@ Nguồn ghi: `Service.send_command()` tạo UUID dạng hex, ghi trạng thái `
 | `status` | `TEXT` | Không | `NOT NULL` | Vòng đời lệnh: code sử dụng `pending`, `ok`, `failed`, `timeout` | Service tạo/cập nhật |
 | `sent_ts` | `TIMESTAMPTZ` | Không | `NOT NULL` | Thời điểm backend tạo/gửi lệnh | `Service.clock()` |
 | `ack_ts` | `TIMESTAMPTZ` | Có | — | Thời điểm backend xử lý ACK; timeout giữ `NULL` | `Service._finish_command()` |
-| `confirmed_ts` | `TIMESTAMPTZ` | Có | — | Thời điểm backend nhận telemetry xác nhận thiết bị đã thực thi vật lý | `Service.on_telemetry()` |
+| `confirmed_ts` | `TIMESTAMPTZ` | Có | — | Thời điểm backend nhận telemetry có trạng thái thiết bị khớp với trạng thái đích của lệnh (state-match confirmation based on telemetry) | `Service.on_telemetry()` |
 | `detail` | `TEXT` | Có | — | Chi tiết ACK lỗi hoặc lý do timeout | ACK hoặc Service |
 | `ts` | `TIMESTAMPTZ` | Không | `NOT NULL` | Timestamp bản ghi lệnh lúc tạo; mặc định theo `sent_ts` nếu Storage không nhận `ts` | `Service.send_command()` / `save_command()` |
 
@@ -142,7 +142,7 @@ Trạng thái MQTT online/offline: hiện được lưu bền vững vào bảng
 | `failed` | `int` | Số lệnh thiết bị báo thất bại (nhận ACK `result = 'failed'`) |
 | `timeout` | `int` | Số lệnh không nhận được ACK trong thời hạn quy định (mặc định 5.0s) |
 | `pending` | `int` | Số lệnh đang chờ phản hồi từ thiết bị |
-| `confirmed_count` | `int` | Số lệnh đã nhận được telemetry xác nhận thực thi vật lý (`confirmed_ts IS NOT NULL`) |
+| `confirmed_count` | `int` | Số lệnh đã nhận được telemetry xác nhận khớp trạng thái đích (`confirmed_ts IS NOT NULL`) |
 | `success_rate` | `float` hoặc `None` | Tỷ lệ thành công $N_{ok} / N_{total}$; `None` nếu $total = 0$ |
 | `avg_duration_s` | `float` hoặc `None` | Thời gian phản hồi ACK trung bình (giây) tính bằng $\text{ack\_ts} - \text{sent\_ts}$ |
 | `min_duration_s` | `float` hoặc `None` | Thời gian phản hồi ACK nhanh nhất (giây) |
@@ -166,11 +166,19 @@ Trạng thái MQTT online/offline: hiện được lưu bền vững vào bảng
 | `unresolved_gaps_beyond_window` | `int` | Số sequence gaps chưa được giải quyết đã vượt quá cửa sổ trễ quan sát |
 | `missing_packets_confirmed`| `int` | Alias tương thích ngược của `unresolved_gaps_beyond_window` |
 | `tx_attempted_count` | `int` hoặc `None` | Tổng số lần thiết bị chuẩn bị phát bản tin; `None` nếu thiếu `tx_count` |
-| `delivery_rate` | `float` hoặc `None` | Tỷ lệ phân phối $received\_unique / tx\_attempted\_count$; `None` nếu thiếu `tx_count` hoặc bất thường |
+| `delivery_rate` | `float` hoặc `None` | Tỷ lệ phân phối $received\_unique / tx\_attempted\_count$ (chỉ đo trong tiến trình runtime); `None` khi backend restart (do số nhận mạng lịch sử không lưu bền) hoặc khi lọc theo khoảng thời gian |
 | `delivery_rate_pct` | `float` hoặc `None` | Tỷ lệ phân phối phần trăm (%) |
-| `delivery_rate_note` | `str` | Ghi chú giải thích chi tiết cơ sở khoa học của delivery rate |
+| `delivery_rate_note` | `str` | Ghi chú giải thích chi tiết cơ sở khoa học của delivery rate, phạm vi runtime và hạn chế qua restart |
 | `note` | `str` | Alias tương thích ngược của `delivery_rate_note` |
-| `storage_rate` | `float` hoặc `None` | Tỷ lệ lưu trữ bền vững $stored\_unique / tx\_attempted\_count$ |
+| `storage_rate` | `float` hoặc `None` | Tỷ lệ lưu trữ bền vững $stored\_unique / tx\_attempted\_count$ (bảo toàn qua backend restart từ PostgreSQL) |
 | `storage_rate_pct` | `float` hoặc `None` | Tỷ lệ lưu trữ bền vững phần trăm (%) |
 | `boot_count` | `int` | Số lượng phiên khởi động khác nhau được ghi nhận |
 | `late_window_s` | `float` | Độ dài cửa sổ thời gian chờ bản tin đến muộn (mặc định 10.0 giây) |
+
+### 6.3. Quy ước Truy vấn Lịch sử REST API theo Metric
+
+- `GET /api/history`: Endpoint đơn giản ban đầu, **từ chối (HTTP 422)** các cờ boolean an toàn mới V2 (`door_safety_lock`, `gas_sensor_fault`). Frontend **không truy vấn endpoint này** cho các cờ an toàn.
+- `GET /api/history/page`: Phân trang OFFSET (`limit`, `offset`), hỗ trợ đầy đủ `HISTORY_METRICS` (bao gồm `door_safety_lock` và `gas_sensor_fault`).
+- `GET /api/history.csv`: Xuất dữ liệu lớn dạng streaming Keyset pagination (`(ts, id) > (last_ts, last_id)`), hỗ trợ đầy đủ `HISTORY_METRICS`.
+- `GET /api/history/stats`: Thống kê tổng hợp (avg, min, max, count), **chỉ hỗ trợ đại lượng số học** (`temperature_c`, `humidity_pct`, `smoke_raw`, `gas_raw`), trả về 422 với metric boolean.
+- `GET /api/history/reliability`: Endpoint giám sát độ tin cậy và tỷ lệ giao nhận telemetry, trả về cấu trúc dict ở mục 6.2.
