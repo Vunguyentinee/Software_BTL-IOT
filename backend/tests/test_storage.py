@@ -310,3 +310,38 @@ def test_gas_raw_history_and_stats_in_memory():
     types = [e["type"] for e in errs]
     assert "gas_alarm" in types
     assert "gas_error" in types
+
+
+def test_v2_metrics_and_command_stats_in_memory():
+    s = InMemoryStorage()
+    s.save_telemetry(tel(100.0, 25.0, door_safety_lock=True, gas_sensor_fault=False, tx_count=1))
+    s.save_telemetry(tel(101.0, 26.0, door_safety_lock=False, gas_sensor_fault=True, tx_count=2))
+
+    # door_safety_lock and gas_sensor_fault in history & history_page
+    h_door = s.history("door_safety_lock", None, None)
+    assert len(h_door) == 2
+    assert [p["value"] for p in h_door] == [True, False]
+
+    page_fault = s.history_page("gas_sensor_fault", None, None, 10, 0)
+    assert len(page_fault) == 2
+    assert [p["value"] for p in page_fault] == [False, True]
+
+    # Non-numeric metric in history_stats raises ValueError
+    with pytest.raises(ValueError, match="unsupported history stats metric"):
+        s.history_stats("door_safety_lock", None, None)
+
+    # Command stats with confirm latency
+    s.save_command({
+        "cmd_id": "c1", "sent_ts": 10.0, "ack_ts": 10.2, "confirmed_ts": 10.8,
+        "status": "ok", "ts": 10.0
+    })
+    s.save_command({
+        "cmd_id": "c2", "sent_ts": 20.0, "ack_ts": 20.5, "confirmed_ts": None,
+        "status": "ok", "ts": 20.0
+    })
+    stats = s.command_stats()
+    assert stats["total"] == 2
+    assert stats["confirmed_count"] == 1
+    assert stats["avg_confirm_duration_s"] == pytest.approx(0.8, abs=0.01)
+    assert stats["min_confirm_duration_s"] == pytest.approx(0.8, abs=0.01)
+    assert stats["max_confirm_duration_s"] == pytest.approx(0.8, abs=0.01)

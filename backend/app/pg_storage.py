@@ -43,6 +43,13 @@ CREATE TABLE IF NOT EXISTS telemetry (
     gas_sensor_ok BOOLEAN,
     safety_mode TEXT,
     safety_reason TEXT,
+    connection_id BIGINT,
+    control_mode TEXT,
+    backend_state TEXT,
+    tx_count BIGINT,
+    door_safety_lock BOOLEAN,
+    gas_sensor_fault BOOLEAN,
+    active_alarms JSONB,
     modes JSONB,
     device_id TEXT,
     boot_id TEXT,
@@ -55,6 +62,8 @@ CREATE TABLE IF NOT EXISTS events (
     ts TIMESTAMPTZ NOT NULL,
     type TEXT NOT NULL,
     state TEXT NOT NULL,
+    event_id TEXT,
+    alarm TEXT,
     value DOUBLE PRECISION,
     threshold DOUBLE PRECISION,
     reason TEXT,
@@ -70,6 +79,7 @@ CREATE TABLE IF NOT EXISTS commands (
     status TEXT NOT NULL,
     sent_ts TIMESTAMPTZ NOT NULL,
     ack_ts TIMESTAMPTZ,
+    confirmed_ts TIMESTAMPTZ,
     detail TEXT,
     ts TIMESTAMPTZ NOT NULL
 );
@@ -93,11 +103,23 @@ ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS gas_alarm BOOLEAN;
 ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS gas_sensor_ok BOOLEAN;
 ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS safety_mode TEXT;
 ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS safety_reason TEXT;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS connection_id BIGINT;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS control_mode TEXT;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS backend_state TEXT;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS tx_count BIGINT;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS door_safety_lock BOOLEAN;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS gas_sensor_fault BOOLEAN;
+ALTER TABLE telemetry ADD COLUMN IF NOT EXISTS active_alarms JSONB;
 CREATE UNIQUE INDEX IF NOT EXISTS telemetry_dedup_idx
 ON telemetry (device_id, boot_id, seq)
 WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL;
 CREATE INDEX IF NOT EXISTS telemetry_device_boot_seq_idx
 ON telemetry (device_id, boot_id, seq);
+CREATE INDEX IF NOT EXISTS telemetry_device_boot_conn_idx
+ON telemetry (device_id, boot_id, connection_id);
+ALTER TABLE events ADD COLUMN IF NOT EXISTS event_id TEXT;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS alarm TEXT;
+CREATE INDEX IF NOT EXISTS events_event_id_idx ON events (event_id) WHERE event_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS events_type_ts_idx ON events (type, ts);
 CREATE INDEX IF NOT EXISTS commands_status_idx ON commands (status);
 """
@@ -107,6 +129,8 @@ TELEMETRY_COLS = [
     "door_command", "fan_on", "led1_on", "led2_on", "led3_on", "heat_alarm", "uptime_ms",
     "smoke_raw", "smoke_alarm", "pump_on",
     "gas_raw", "gas_alarm", "gas_sensor_ok", "safety_mode", "safety_reason",
+    "connection_id", "control_mode", "backend_state", "tx_count", "door_safety_lock",
+    "gas_sensor_fault", "active_alarms",
 ]
 # chỉ các cột này được truy vấn lịch sử (tên cột không bao giờ lấy trực tiếp từ người dùng)
 # Column names and predicates are constants, never SQL supplied by a caller.
@@ -161,13 +185,20 @@ class PostgresStorage:
         try:
             with self._pool.connection() as conn:
                 rows = conn.execute(
-                    "SELECT device_id, boot_id, max(seq) AS max_seq "
+                    "SELECT device_id, boot_id, count(*)::bigint AS stored_cnt, "
+                    "max(seq) AS max_seq, max(tx_count) AS max_tx_count "
                     "FROM telemetry "
                     "WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL "
                     "GROUP BY device_id, boot_id"
                 ).fetchall()
                 for r in rows:
-                    self._tracker.init_session(r["device_id"], r["boot_id"], r["max_seq"])
+                    self._tracker.init_session(
+                        r["device_id"],
+                        r["boot_id"],
+                        r["max_seq"],
+                        r.get("max_tx_count"),
+                        received_unique=r.get("stored_cnt"),
+                    )
         except Exception:
             log.exception("failed to initialize tracker sessions from db")
 
@@ -182,15 +213,19 @@ class PostgresStorage:
 
     # ---- telemetry -----------------------------------------------------
     def save_telemetry(self, rec: dict) -> bool:
+        tx_count = rec.get("tx_count")
+        if tx_count is not None and (not isinstance(tx_count, int) or tx_count < 0):
+            raise ValueError("tx_count must be a non-negative integer")
+
         cols = ", ".join(TELEMETRY_COLS)
         marks = ", ".join(["%s"] * len(TELEMETRY_COLS))
-        values = [rec.get(c) for c in TELEMETRY_COLS]
+        values = [Jsonb(rec.get(c) or []) if c == "active_alarms" else rec.get(c) for c in TELEMETRY_COLS]
         device_id = rec.get("device_id")
         boot_id = rec.get("boot_id")
         seq = rec.get("seq")
         ts = rec["ts"]
 
-        ingest = self._tracker.record_incoming(device_id, boot_id, seq, now=ts)
+        ingest = self._tracker.record_incoming(device_id, boot_id, seq, tx_count=tx_count, now=ts)
         if not ingest.stored:
             return False
 
@@ -311,15 +346,15 @@ class PostgresStorage:
     def save_event(self, rec: dict) -> None:
         with self._pool.connection() as conn:
             conn.execute(
-                "INSERT INTO events (ts, type, state, value, threshold, reason, uptime_ms) "
-                "VALUES (to_timestamp(%s), %s, %s, %s, %s, %s, %s)",
-                [rec["ts"], rec["type"], rec["state"], rec.get("value"), rec.get("threshold"),
-                 rec.get("reason"), rec.get("uptime_ms")])
+                "INSERT INTO events (ts, type, state, event_id, alarm, value, threshold, reason, uptime_ms) "
+                "VALUES (to_timestamp(%s), %s, %s, %s, %s, %s, %s, %s, %s)",
+                [rec.get("ts", time.time()), rec["type"], rec["state"], rec.get("event_id"), rec.get("alarm"),
+                 rec.get("value"), rec.get("threshold"), rec.get("reason"), rec.get("uptime_ms")])
 
     def list_events(self, limit: int = 100) -> list[dict]:
         with self._pool.connection() as conn:
             rows = conn.execute(
-                "SELECT extract(epoch from ts)::float8 AS ts, type, state, value, threshold, "
+                "SELECT extract(epoch from ts)::float8 AS ts, type, state, event_id, alarm, value, threshold, "
                 "reason, uptime_ms FROM events ORDER BY ts DESC, id DESC LIMIT %s", [limit])
             return [dict(r) for r in rows.fetchall()]
 
@@ -328,13 +363,13 @@ class PostgresStorage:
         with self._pool.connection() as conn:
             conn.execute(
                 "INSERT INTO commands (cmd_id, device, action, source, status, detail, "
-                "sent_ts, ack_ts, ts) VALUES (%s, %s, %s, %s, %s, %s, to_timestamp(%s), "
-                "to_timestamp(%s), to_timestamp(%s)) "
+                "sent_ts, ack_ts, confirmed_ts, ts) VALUES (%s, %s, %s, %s, %s, %s, to_timestamp(%s), "
+                "to_timestamp(%s), to_timestamp(%s), to_timestamp(%s)) "
                 "ON CONFLICT (cmd_id) DO UPDATE SET status = EXCLUDED.status, "
-                "detail = EXCLUDED.detail, ack_ts = EXCLUDED.ack_ts",
+                "detail = EXCLUDED.detail, ack_ts = EXCLUDED.ack_ts, confirmed_ts = EXCLUDED.confirmed_ts",
                 [rec["cmd_id"], rec["device"], rec["action"], rec.get("source"),
                  rec["status"], rec.get("detail"), rec["sent_ts"], rec.get("ack_ts"),
-                 rec.get("ts", rec["sent_ts"])])
+                 rec.get("confirmed_ts"), rec.get("ts", rec["sent_ts"])])
 
     def update_command(self, cmd_id: str, **fields) -> Optional[dict]:
         sets, args = [], []
@@ -409,9 +444,14 @@ class PostgresStorage:
 
     def list_error_events(self, limit: int = 100, start: Optional[float] = None,
                           end: Optional[float] = None) -> list[dict]:
-        sql = ("SELECT extract(epoch from ts)::float8 AS ts, type, state, value, "
+        sql = ("SELECT extract(epoch from ts)::float8 AS ts, type, state, event_id, alarm, value, "
                "threshold, reason, uptime_ms FROM events "
-               "WHERE type != 'connection' AND (type ILIKE '%%error%%' OR type IN ('heat_alarm', 'smoke_alarm', 'dht_error', 'gas_alarm', 'gas_error'))")
+               "WHERE type != 'connection' AND ("
+               "type ILIKE '%%error%%' OR type ILIKE '%%fault%%' OR type IN ("
+               "'heat_alarm', 'smoke_alarm', 'dht_error', 'gas_alarm', 'gas_error', "
+               "'gas_sensor_fault', 'door_open_unconfirmed', 'fan_rotation_unconfirmed', "
+               "'alarm_response'"
+               "))")
         args: list = []
         if start is not None:
             sql += " AND ts >= to_timestamp(%s)"
@@ -434,9 +474,13 @@ class PostgresStorage:
             "count(*) FILTER (WHERE status = 'failed')::bigint AS failed, "
             "count(*) FILTER (WHERE status = 'timeout')::bigint AS timeout, "
             "count(*) FILTER (WHERE status = 'pending')::bigint AS pending, "
+            "count(*) FILTER (WHERE confirmed_ts IS NOT NULL)::bigint AS confirmed_count, "
             "avg(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS avg_duration_s, "
             "min(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS min_duration_s, "
-            "max(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS max_duration_s "
+            "max(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS max_duration_s, "
+            "avg(extract(epoch from (confirmed_ts - sent_ts))::float8) FILTER (WHERE confirmed_ts IS NOT NULL AND sent_ts IS NOT NULL AND confirmed_ts >= sent_ts) AS avg_confirm_duration_s, "
+            "min(extract(epoch from (confirmed_ts - sent_ts))::float8) FILTER (WHERE confirmed_ts IS NOT NULL AND sent_ts IS NOT NULL AND confirmed_ts >= sent_ts) AS min_confirm_duration_s, "
+            "max(extract(epoch from (confirmed_ts - sent_ts))::float8) FILTER (WHERE confirmed_ts IS NOT NULL AND sent_ts IS NOT NULL AND confirmed_ts >= sent_ts) AS max_confirm_duration_s "
             "FROM commands WHERE 1=1"
         )
         args: list = []
