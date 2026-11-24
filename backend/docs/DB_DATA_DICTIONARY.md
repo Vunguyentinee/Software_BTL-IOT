@@ -27,14 +27,21 @@ Nguồn ghi: `Service.on_telemetry()` kiểm tra payload bằng `models.Telemetr
 | `led3_on` | `BOOLEAN` | Có | — | Trạng thái LED 3 | Payload telemetry đã qua `Telemetry` |
 | `heat_alarm` | `BOOLEAN` | Có | — | Trạng thái cảnh báo nhiệt | Payload telemetry đã qua `Telemetry` |
 | `uptime_ms` | `BIGINT` | Có | — | Giá trị uptime do thiết bị gửi; tên trường thể hiện đơn vị `ms` | Payload telemetry đã qua `Telemetry` |
-| `smoke_raw` | `INTEGER` | Có | — | Giá trị khói thô; model cho phép `null` | Payload telemetry đã qua `Telemetry` |
-| `smoke_alarm` | `BOOLEAN` | Có | — | Trạng thái cảnh báo khói | Payload telemetry; mặc định model là `False` |
+| `smoke_raw` | `INTEGER` | Có | — | Giá trị khói thô MQ-2 tại GPIO34 (0–4095); model cho phép `null` | Payload telemetry đã qua `Telemetry` |
+| `smoke_alarm` | `BOOLEAN` | Có | — | Trạng thái cảnh báo khói MQ-2 | Payload telemetry; mặc định model là `False` |
 | `pump_on` | `BOOLEAN` | Có | — | Trạng thái bơm | Payload telemetry; mặc định model là `False` |
-| `gas_raw` | `INTEGER` | Có | — | Giá trị nồng độ khí gas thô MQ-2; nullable cho dữ liệu legacy | Payload telemetry đã qua `Telemetry` |
-| `gas_alarm` | `BOOLEAN` | Có | — | Trạng thái cảnh báo rò rỉ khí gas; nullable nếu chưa có sensor | Payload telemetry đã qua `Telemetry` |
-| `gas_sensor_ok` | `BOOLEAN` | Có | — | Trạng thái cảm biến gas hoạt động tốt; null cho bản tin cũ | Payload telemetry đã qua `Telemetry` |
-| `safety_mode` | `TEXT` | Có | — | Chế độ an toàn khẩn cấp (`normal`, `gas_alert`, `fire_alert`) | Payload telemetry đã qua `Telemetry` |
-| `safety_reason` | `TEXT` | Có | — | Lý do kích hoạt chế độ an toàn khẩn cấp | Payload telemetry đã qua `Telemetry` |
+| `gas_raw` | `INTEGER` | Có | — | (Legacy / Deprecated) Giá trị nồng độ khí gas thô cũ; nullable | Payload telemetry đã qua `Telemetry` |
+| `gas_alarm` | `BOOLEAN` | Có | — | (Legacy / Deprecated) Trạng thái cảnh báo rò rỉ khí gas cũ; nullable | Payload telemetry đã qua `Telemetry` |
+| `gas_sensor_ok` | `BOOLEAN` | Có | — | (Legacy / Deprecated) Trạng thái cảm biến gas cũ; nullable | Payload telemetry đã qua `Telemetry` |
+| `safety_mode` | `TEXT` | Có | — | (Legacy / Deprecated) Chế độ an toàn cũ; nullable | Payload telemetry đã qua `Telemetry` |
+| `safety_reason` | `TEXT` | Có | — | (Legacy / Deprecated) Lý do kích hoạt chế độ an toàn cũ; nullable | Payload telemetry đã qua `Telemetry` |
+| `connection_id` | `BIGINT` | Có | Index | Định danh phiên kết nối MQTT; tăng mỗi lần reconnect không reboot | Payload `Telemetry` V2 |
+| `control_mode` | `TEXT` | Có | — | Chế độ điều khiển thiết bị (`auto`, `manual`) | Payload `Telemetry` V2 |
+| `backend_state` | `TEXT` | Có | — | Trạng thái nghiệp vụ phía backend (`nominal`, `recovering`...) | Payload `Telemetry` V2 |
+| `tx_count` | `BIGINT` | Có | — | Số lần chuẩn bị phát bản tin từ thiết bị ($tx\_attempted$) | Payload `Telemetry` V2 |
+| `door_safety_lock` | `BOOLEAN` | Có | — | Khóa an toàn cửa khi có báo động khẩn cấp | Payload `Telemetry` V2 |
+| `gas_sensor_fault` | `BOOLEAN` | Có | — | Cờ báo lỗi phần cứng hoặc mất kết nối cảm biến khí | Payload `Telemetry` V2 |
+| `active_alarms` | `JSONB` | Có | — | Danh sách các cảnh báo đang kích hoạt | Payload `Telemetry` V2 |
 | `modes` | `JSONB` | Có | — | Map chế độ thiết bị; giá trị model là `auto` hoặc `manual` | Payload telemetry; `save_telemetry()` ghi `{}` nếu thiếu/falsy |
 | `device_id` | `TEXT` | Có | Partial Unique Index | Định danh thiết bị phần cứng (ví dụ: `esp32-home`). Nullable để tương thích dữ liệu legacy | Payload `Telemetry` hoặc Settings |
 | `boot_id` | `TEXT` | Có | Partial Unique Index | Định danh phiên khởi động duy nhất của thiết bị (UUID hoặc boot timestamp) | Payload `Telemetry` |
@@ -44,6 +51,7 @@ Chỉ mục tường minh:
 - `telemetry_ts_idx ON telemetry (ts)`: Phục vụ lọc và truy vấn lịch sử thời gian.
 - `telemetry_dedup_idx UNIQUE ON telemetry (device_id, boot_id, seq) WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL`: Ngăn chặn hoàn toàn trùng lặp bản tin ở cấp độ database, đồng thời không gây xung đột với bản tin legacy (`NULL`).
 - `telemetry_device_boot_seq_idx ON telemetry (device_id, boot_id, seq)`: Tối ưu hóa truy vấn sequence gap, session statistics và window functions.
+- `telemetry_device_boot_conn_idx ON telemetry (device_id, boot_id, connection_id)`: Tối ưu hóa phân tích chuỗi bản tin theo từng phiên kết nối MQTT.
 
 ### Lưu ý riêng về cửa
 
@@ -57,8 +65,10 @@ Nguồn ghi: `Service.on_event()` kiểm tra payload bằng `models.Event`, gắ
 |---|---|---:|---|---|---|
 | `id` | `BIGSERIAL` | Không | PK | Số thứ tự hàng do PostgreSQL cấp | PostgreSQL sequence |
 | `ts` | `TIMESTAMPTZ` | Không | `NOT NULL` | Thời điểm backend nhận event | `Service.clock()` → `to_timestamp()` |
-| `type` | `TEXT` | Không | `NOT NULL` | Loại event; gồm event từ thiết bị (`heat_alarm`, `smoke_alarm`, `pump`, `fan`, `door`, `led1`, `dht_error`, `gas_alarm`, `gas_error`) và event kết nối từ backend (`connection`) | Payload event hoặc `Service._set_online()` |
-| `state` | `TEXT` | Không | `NOT NULL` | Pha event (`start`, `end`) hoặc trạng thái kết nối (`online`, `offline`) | Payload event hoặc `Service._set_online()` |
+| `type` | `TEXT` | Không | `NOT NULL` | Loại event; gồm event từ thiết bị (`heat_alarm`, `smoke_alarm`, `pump`, `fan`, `door`, `led1`, `dht_error`, `gas_sensor_fault`, `door_open_unconfirmed`, `fan_rotation_unconfirmed`, `alarm_response`) và event kết nối (`connection`) | Payload event hoặc `Service._set_online()` |
+| `state` | `TEXT` | Không | `NOT NULL` | Pha event (`start`, `retry`, `escalated`, `end`) hoặc trạng thái kết nối (`online`, `offline`) | Payload event hoặc `Service._set_online()` |
+| `event_id` | `TEXT` | Có | Index | Định danh chuỗi sự kiện; non-unique để một sự kiện đi qua đủ các pha vòng đời | Payload event V2 |
+| `alarm` | `TEXT` | Có | — | Tên cảnh báo liên kết (`smoke_alarm`, `heat_alarm`...) | Payload event V2 |
 | `value` | `DOUBLE PRECISION` | Có | — | Giá trị tùy chọn đi kèm event; source không quy định một đơn vị chung | Payload event |
 | `threshold` | `DOUBLE PRECISION` | Có | — | Ngưỡng tùy chọn đi kèm event; source không quy định một đơn vị chung | Payload event |
 | `reason` | `TEXT` | Có | — | Lý do tùy chọn hoặc nguyên nhân thay đổi kết nối: `telemetry` (gói telemetry kích hoạt online), `status` (broker báo qua LWT hoặc topic status), `timeout` (quá thời hạn không nhận heartbeat), `mqtt_connect` (backend kết nối lại MQTT) | Payload event hoặc `Service._set_online()` |
@@ -67,6 +77,7 @@ Nguồn ghi: `Service.on_event()` kiểm tra payload bằng `models.Event`, gắ
 Chỉ mục tường minh:
 - `events_ts_idx ON events (ts)`: Sắp xếp và lọc sự kiện theo thời gian.
 - `events_type_ts_idx ON events (type, ts)`: Tối ưu hóa truy vấn lọc sự kiện kết nối (`type = 'connection'`) và sự kiện lỗi (`list_connection_events`, `list_error_events`).
+- `events_event_id_idx ON events (event_id) WHERE event_id IS NOT NULL`: Tối ưu hóa truy vấn chuỗi vòng đời sự kiện theo `event_id`.
 
 DDL không có constraint kiểm tra miền `type`/`state` và không có khóa chống trùng. Miền giá trị nêu trên được bảo vệ ở đường ghi qua `Service`, không phải bởi PostgreSQL.
 
@@ -83,6 +94,7 @@ Nguồn ghi: `Service.send_command()` tạo UUID dạng hex, ghi trạng thái `
 | `status` | `TEXT` | Không | `NOT NULL` | Vòng đời lệnh: code sử dụng `pending`, `ok`, `failed`, `timeout` | Service tạo/cập nhật |
 | `sent_ts` | `TIMESTAMPTZ` | Không | `NOT NULL` | Thời điểm backend tạo/gửi lệnh | `Service.clock()` |
 | `ack_ts` | `TIMESTAMPTZ` | Có | — | Thời điểm backend xử lý ACK; timeout giữ `NULL` | `Service._finish_command()` |
+| `confirmed_ts` | `TIMESTAMPTZ` | Có | — | Thời điểm backend nhận telemetry có trạng thái thiết bị khớp với trạng thái đích của lệnh (state-match confirmation based on telemetry) | `Service.on_telemetry()` |
 | `detail` | `TEXT` | Có | — | Chi tiết ACK lỗi hoặc lý do timeout | ACK hoặc Service |
 | `ts` | `TIMESTAMPTZ` | Không | `NOT NULL` | Timestamp bản ghi lệnh lúc tạo; mặc định theo `sent_ts` nếu Storage không nhận `ts` | `Service.send_command()` / `save_command()` |
 
@@ -90,7 +102,7 @@ Chỉ mục tường minh:
 - `commands_sent_idx ON commands (sent_ts)`: Sắp xếp lệnh gửi mới nhất trước.
 - `commands_status_idx ON commands (status)`: Tối ưu hóa thống kê trạng thái lệnh (`command_stats`).
 
-`save_command()` dùng `ON CONFLICT (cmd_id)` nhưng khi xung đột chỉ cập nhật `status`, `detail`, `ack_ts`; các trường nhận diện lệnh ban đầu không bị thay thế.
+`save_command()` dùng `ON CONFLICT (cmd_id)` nhưng khi xung đột chỉ cập nhật `status`, `detail`, `ack_ts`, `confirmed_ts`; các trường nhận diện lệnh ban đầu không bị thay thế.
 
 Command ACK không tạo bảng hay hàng ACK riêng. `Service.on_cmd_ack()` kiểm tra payload rồi dùng `update_command()` cập nhật hàng lệnh đang `pending`. ACK đến muộn sau timeout hoặc ACK lặp không làm thay đổi trạng thái cuối theo logic hiện tại của `Service._finish_command()`.
 
@@ -130,24 +142,43 @@ Trạng thái MQTT online/offline: hiện được lưu bền vững vào bảng
 | `failed` | `int` | Số lệnh thiết bị báo thất bại (nhận ACK `result = 'failed'`) |
 | `timeout` | `int` | Số lệnh không nhận được ACK trong thời hạn quy định (mặc định 5.0s) |
 | `pending` | `int` | Số lệnh đang chờ phản hồi từ thiết bị |
+| `confirmed_count` | `int` | Số lệnh đã nhận được telemetry xác nhận khớp trạng thái đích (`confirmed_ts IS NOT NULL`) |
 | `success_rate` | `float` hoặc `None` | Tỷ lệ thành công $N_{ok} / N_{total}$; `None` nếu $total = 0$ |
-| `avg_duration_s` | `float` hoặc `None` | Thời gian phản hồi trung bình (giây) tính bằng $\text{ack\_ts} - \text{sent\_ts}$ |
-| `min_duration_s` | `float` hoặc `None` | Thời gian phản hồi nhanh nhất (giây) |
-| `max_duration_s` | `float` hoặc `None` | Thời gian phản hồi chậm nhất (giây) |
+| `avg_duration_s` | `float` hoặc `None` | Thời gian phản hồi ACK trung bình (giây) tính bằng $\text{ack\_ts} - \text{sent\_ts}$ |
+| `min_duration_s` | `float` hoặc `None` | Thời gian phản hồi ACK nhanh nhất (giây) |
+| `max_duration_s` | `float` hoặc `None` | Thời gian phản hồi ACK chậm nhất (giây) |
+| `avg_confirm_duration_s` | `float` hoặc `None` | Thời gian xác nhận thực thi trung bình (giây) tính bằng $\text{confirmed\_ts} - \text{sent\_ts}$ |
+| `min_confirm_duration_s` | `float` hoặc `None` | Thời gian xác nhận thực thi nhanh nhất (giây) |
+| `max_confirm_duration_s` | `float` hoặc `None` | Thời gian xác nhận thực thi chậm nhất (giây) |
 
 ### 6.2. Thống kê độ tin cậy Telemetry (`reliability_stats`)
 
 | Trường | Kiểu | Mô tả |
 |---|---|---|
 | `received_count` | `int` | Tổng số bản tin backend đã nhận từ MQTT |
+| `received_unique` | `int` | Số bản tin duy nhất đã nhận (loại trừ trùng lặp) |
 | `stored_count` | `int` | Tổng số bản tin hợp lệ được lưu bền trong PostgreSQL |
+| `stored_unique` | `int` | Số bản tin duy nhất đã lưu trong PostgreSQL |
 | `duplicate_count` | `int` | Số bản tin trùng lặp phát hiện được theo bộ ba `(device_id, boot_id, seq)` |
 | `out_of_order_count` | `int` | Số bản tin đến muộn / lệch thứ tự ($seq < max\_seq$) trong cùng phiên boot |
 | `gaps_count` | `int` | Tổng số lần phát hiện đứt đoạn chuỗi tuần tự ($seq > max\_seq + 1$) tích lũy |
 | `missing_packets_pending` | `int` | Số sequence gaps đang khuyết trong cửa sổ quan sát ($T_{\text{late}} = 10.0s$) |
 | `unresolved_gaps_beyond_window` | `int` | Số sequence gaps chưa được giải quyết đã vượt quá cửa sổ trễ quan sát |
 | `missing_packets_confirmed`| `int` | Alias tương thích ngược của `unresolved_gaps_beyond_window` |
+| `tx_attempted_count` | `int` hoặc `None` | Tổng số lần thiết bị chuẩn bị phát bản tin; `None` nếu thiếu `tx_count` |
+| `delivery_rate` | `float` hoặc `None` | Tỷ lệ phân phối $received\_unique / tx\_attempted\_count$ (chỉ đo trong tiến trình runtime); `None` khi backend restart (do số nhận mạng lịch sử không lưu bền) hoặc khi lọc theo khoảng thời gian |
+| `delivery_rate_pct` | `float` hoặc `None` | Tỷ lệ phân phối phần trăm (%) |
+| `delivery_rate_note` | `str` | Ghi chú giải thích chi tiết cơ sở khoa học của delivery rate, phạm vi runtime và hạn chế qua restart |
+| `note` | `str` | Alias tương thích ngược của `delivery_rate_note` |
+| `storage_rate` | `float` hoặc `None` | Tỷ lệ lưu trữ bền vững $stored\_unique / tx\_attempted\_count$ (bảo toàn qua backend restart từ PostgreSQL) |
+| `storage_rate_pct` | `float` hoặc `None` | Tỷ lệ lưu trữ bền vững phần trăm (%) |
 | `boot_count` | `int` | Số lượng phiên khởi động khác nhau được ghi nhận |
 | `late_window_s` | `float` | Độ dài cửa sổ thời gian chờ bản tin đến muộn (mặc định 10.0 giây) |
-| `delivery_rate` | `None` | Tỷ lệ phân phối; luôn trả `None` do chưa có bộ đếm phát từ ESP32 firmware |
-| `delivery_rate_note` | `str` | Chú thích rõ ràng nguyên nhân khoa học không công bố tỷ lệ phỏng đoán |
+
+### 6.3. Quy ước Truy vấn Lịch sử REST API theo Metric
+
+- `GET /api/history`: Endpoint đơn giản ban đầu, **từ chối (HTTP 422)** các cờ boolean an toàn mới V2 (`door_safety_lock`, `gas_sensor_fault`). Frontend **không truy vấn endpoint này** cho các cờ an toàn.
+- `GET /api/history/page`: Phân trang OFFSET (`limit`, `offset`), hỗ trợ đầy đủ `HISTORY_METRICS` (bao gồm `door_safety_lock` và `gas_sensor_fault`).
+- `GET /api/history.csv`: Xuất dữ liệu lớn dạng streaming Keyset pagination (`(ts, id) > (last_ts, last_id)`), hỗ trợ đầy đủ `HISTORY_METRICS`.
+- `GET /api/history/stats`: Thống kê tổng hợp (avg, min, max, count), **chỉ hỗ trợ đại lượng số học** (`temperature_c`, `humidity_pct`, `smoke_raw`, `gas_raw`), trả về 422 với metric boolean.
+- `GET /api/history/reliability`: Endpoint giám sát độ tin cậy và tỷ lệ giao nhận telemetry, trả về cấu trúc dict ở mục 6.2.

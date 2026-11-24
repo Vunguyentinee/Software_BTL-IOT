@@ -84,25 +84,34 @@ erDiagram
         BOOLEAN led3_on
         BOOLEAN heat_alarm
         BIGINT uptime_ms
-        INTEGER smoke_raw
-        BOOLEAN smoke_alarm
+        INTEGER smoke_raw "Khói MQ-2 thô (0-4095)"
+        BOOLEAN smoke_alarm "Cảnh báo khói MQ-2"
         BOOLEAN pump_on
-        INTEGER gas_raw "Mới: nồng độ gas MQ-2 thô"
-        BOOLEAN gas_alarm "Mới: cảnh báo rò rỉ gas"
-        BOOLEAN gas_sensor_ok "Mới: trạng thái cảm biến gas"
-        TEXT safety_mode "Mới: chế độ an toàn khẩn cấp"
-        TEXT safety_reason "Mới: nguyên nhân kích hoạt an toàn"
+        INTEGER gas_raw "Legacy: nồng độ gas cũ (nullable)"
+        BOOLEAN gas_alarm "Legacy: cảnh báo rò rỉ gas cũ (nullable)"
+        BOOLEAN gas_sensor_ok "Legacy: trạng thái cảm biến gas cũ (nullable)"
+        TEXT safety_mode "Legacy: chế độ an toàn cũ (nullable)"
+        TEXT safety_reason "Legacy: nguyên nhân an toàn cũ (nullable)"
+        BIGINT connection_id "Mới V2: định danh phiên kết nối MQTT"
+        TEXT control_mode "Mới V2: chế độ điều khiển thiết bị"
+        TEXT backend_state "Mới V2: trạng thái nghiệp vụ backend"
+        BIGINT tx_count "Mới V2: bộ đếm gói tin phát từ thiết bị"
+        BOOLEAN door_safety_lock "Mới V2: khóa an toàn cửa"
+        BOOLEAN gas_sensor_fault "Mới V2: cờ lỗi cảm biến khí"
+        JSONB active_alarms "Mới V2: danh sách cảnh báo đang kích hoạt"
         JSONB modes
-        TEXT device_id "Mới: định danh thiết bị"
-        TEXT boot_id "Mới: định danh phiên khởi động"
-        BIGINT seq "Mới: bộ đếm tuần tự gói"
+        TEXT device_id "Định danh thiết bị (esp32-home)"
+        TEXT boot_id "Định danh phiên khởi động duy nhất"
+        BIGINT seq "Bộ đếm tuần tự gói tin trong phiên"
     }
 
     events {
         BIGSERIAL id PK
         TIMESTAMPTZ ts "NOT NULL"
         TEXT type "NOT NULL"
-        TEXT state "NOT NULL"
+        TEXT state "NOT NULL: start, retry, escalated, end"
+        TEXT event_id "Mới V2: định danh chuỗi sự kiện (non-unique)"
+        TEXT alarm "Mới V2: tên cảnh báo liên kết"
         DOUBLE_PRECISION value
         DOUBLE_PRECISION threshold
         TEXT reason
@@ -117,6 +126,7 @@ erDiagram
         TEXT status "NOT NULL"
         TIMESTAMPTZ sent_ts "NOT NULL"
         TIMESTAMPTZ ack_ts
+        TIMESTAMPTZ confirmed_ts "Mới V2: thời điểm nhận telemetry khớp trạng thái đích của lệnh (state-match confirmation based on telemetry)"
         TEXT detail
         TIMESTAMPTZ ts "NOT NULL"
     }
@@ -133,8 +143,8 @@ erDiagram
 
 | Bảng | Khóa/constraint | Chỉ mục tường minh |
 |---|---|---|
-| `telemetry` | `PRIMARY KEY (id)`; `ts NOT NULL`; Partial Unique Constraint: `(device_id, boot_id, seq)` khi các trường `NOT NULL` | `telemetry_ts_idx (ts)`; `telemetry_dedup_idx UNIQUE (device_id, boot_id, seq) WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL`; `telemetry_device_boot_seq_idx (device_id, boot_id, seq)` |
-| `events` | `PRIMARY KEY (id)`; `ts`, `type`, `state` là `NOT NULL` | `events_ts_idx (ts)`; `events_type_ts_idx (type, ts)` |
+| `telemetry` | `PRIMARY KEY (id)`; `ts NOT NULL`; Partial Unique Constraint: `(device_id, boot_id, seq)` khi các trường `NOT NULL` | `telemetry_ts_idx (ts)`; `telemetry_dedup_idx UNIQUE (device_id, boot_id, seq) WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL`; `telemetry_device_boot_seq_idx (device_id, boot_id, seq)`; `telemetry_device_boot_conn_idx (device_id, boot_id, connection_id)` |
+| `events` | `PRIMARY KEY (id)`; `ts`, `type`, `state` là `NOT NULL` | `events_ts_idx (ts)`; `events_type_ts_idx (type, ts)`; `events_event_id_idx (event_id) WHERE event_id IS NOT NULL` |
 | `commands` | `PRIMARY KEY (cmd_id)`; `device`, `action`, `status`, `sent_ts`, `ts` là `NOT NULL` | `commands_sent_idx (sent_ts)`; `commands_status_idx (status)` |
 | `config` | `PRIMARY KEY (id)`; `CHECK (id = 1)`; `config_id`, `thresholds`, `ts` là `NOT NULL` | Không có chỉ mục tường minh ngoài chỉ mục do PK tạo |
 
@@ -260,12 +270,15 @@ Trong mô hình Digital Twin, trạng thái tức thời `Service._telemetry` đ
 ### 8.4. Công thức toán học và kiểm chứng trực tiếp bằng SQL
 
 #### Phân biệt các đại lượng đo lường:
-- $N_{\text{sent}}$: Tổng số bản tin thiết bị thực tế đã phát. Chỉ có thể biết khi firmware ESP32 có bộ đếm và gửi lên. Khi chưa có số này, hệ thống công bố $N_{\text{sent}} = \text{None}$, không tự ý suy đoán tỷ lệ $100\%$.
-- $N_{\text{received}}$: Tổng số bản tin nhận được tại tầng mạng/MQTT của backend.
-- $N_{\text{stored}}$: Tổng số bản tin hợp lệ được lưu bền trong PostgreSQL.
+- $tx\_attempted\_count$ ($N_{\text{attempt}}$): Tổng số lần thiết bị chuẩn bị phát bản tin (lấy từ $\max(tx\_count)$ theo từng phiên boot $\sum_{\text{sessions}} \max(tx\_count)$). Nếu không có $tx\_count$, giá trị là `None`.
+- $received\_unique$ ($N_{\text{recv\_uniq}}$): Số bản tin duy nhất đã nhận được (không tính các bản tin duplicate).
+- $stored\_unique$ / $stored\_count$ ($N_{\text{stored}}$): Tổng số bản tin hợp lệ được lưu bền trong PostgreSQL.
 - $N_{\text{dup}}$: Số bản tin trùng lặp phát hiện được.
-- Tỷ lệ lưu thành công trên số nhận:
-  $$R_{\text{storage\_efficiency}} = \frac{N_{\text{stored}}}{N_{\text{received}}} = \frac{N_{\text{stored}}}{N_{\text{stored}} + N_{\text{dup}}}$$
+- **Tỷ lệ phân phối quan sát được (Observed Delivery Rate)**:
+  $$R_{\text{delivery}} = \frac{N_{\text{recv\_uniq}}}{N_{\text{attempt}}} = \frac{received\_unique}{tx\_attempted\_count}$$
+  Hệ thống tính $R_{\text{delivery}}$ chính xác theo session `(device_id, boot_id)`, không bị ảnh hưởng bởi bản tin duplicate, không clamp giả định $100\%$, và trả về `None` kèm ghi chú giải thích nếu phát hiện bất thường ($N_{\text{recv\_uniq}} > N_{\text{attempt}}$).
+- **Tỷ lệ lưu trữ bền vững (Storage Rate)**:
+  $$R_{\text{storage}} = \frac{N_{\text{stored}}}{N_{\text{attempt}}} = \frac{stored\_unique}{tx\_attempted\_count}$$
 
 #### Truy vấn SQL kiểm chứng Sequence Gap bằng Window Function:
 Câu truy vấn sau được sử dụng trong bài báo để kiểm chứng độc lập tính liên tục của dữ liệu đã lưu trong PostgreSQL:
@@ -293,11 +306,13 @@ ORDER BY gap_start;
 ### 8.5. Thống kê lệnh điều khiển (Command Reliability)
 
 Thời gian đáp ứng của lệnh điều khiển thiết bị:
-$$\Delta T_i = T_{\text{ack}, i} - T_{\text{sent}, i} \quad (\text{với các lệnh có trạng thái } ok \text{ hoặc } failed)$$
+$$\Delta T_{\text{ack}, i} = T_{\text{ack}, i} - T_{\text{sent}, i} \quad (\text{với các lệnh có trạng thái } ok \text{ hoặc } failed)$$
+Thời gian xác nhận khớp trạng thái đích từ telemetry (state-match confirmation based on telemetry):
+$$\Delta T_{\text{confirm}, i} = T_{\text{confirmed}, i} - T_{\text{sent}, i} \quad (\text{với các lệnh có } confirmed\_ts)$$
 Chỉ số độ tin cậy lệnh:
 $$R_{\text{command}} = \frac{N_{ok}}{N_{\text{total}}}$$
-Thời gian trễ trung bình, nhỏ nhất, lớn nhất:
-$$\overline{\Delta T} = \frac{1}{M} \sum_{i=1}^M \Delta T_i, \quad \Delta T_{\min} = \min(\Delta T_i), \quad \Delta T_{\max} = \max(\Delta T_i)$$
+Thời gian trễ xác nhận trung bình, nhỏ nhất, lớn nhất:
+$$\overline{\Delta T_{\text{confirm}}} = \frac{1}{K} \sum_{i=1}^K \Delta T_{\text{confirm}, i}, \quad \min(\Delta T_{\text{confirm}, i}), \quad \max(\Delta T_{\text{confirm}, i})$$
 Triển khai bằng SQL tổng hợp tối ưu trên bảng `commands` qua method `storage.command_stats()`.
 
 ### 8.6. Tính ổn định, An toàn luồng và Giới hạn bộ nhớ (Production-Ready Architecture)
@@ -307,6 +322,8 @@ Triển khai bằng SQL tổng hợp tối ưu trên bảng `commands` qua metho
    - Danh sách sự kiện gap `_gap_events` được giới hạn bằng Ring Buffer `deque(maxlen=1000)`. Tổng số gap trong suốt vòng đời được bảo toàn trong biến tích lũy `_total_gap_events_count`.
    - Các sequence gap được quản lý theo mô hình **Interval-based** `[start_seq, end_seq, detected_at]`, tiêu thụ bộ nhớ cố định $O(k)$ với $k$ là số khoảng rời rạc (kể cả khi khoảng gap lên tới hàng triệu sequence).
    - Quản lý phiên hoạt động theo cơ chế **LRU Session Eviction** với trần tối đa 500 boot sessions đồng thời. Khi vượt ngưỡng, session cũ nhất bị evict, toàn bộ gap intervals của session đó được dọn sạch khỏi RAM và missing packets được kết chuyển an toàn sang bộ đếm `unresolved_beyond_window`.
+   - **Bảo toàn tỷ lệ khi Eviction**: Giá trị `tx_attempted` và `received_unique` của session bị evict được tích lũy vào `_evicted_tx_attempted_*` và `_evicted_received_unique_*` để tỷ lệ $delivery\_rate$ và $storage\_rate$ không bị trôi lệch khi giải phóng RAM.
+   - **Nhất quán sau Restart**: Sau khi backend khởi động lại, `_init_tracker_sessions` chỉ nạp `max_seq` và `max_tx_count` từ PostgreSQL để chống duplicate / out-of-order, tuyệt đối không gán $received\_unique = stored\_count$. Với các session được phục hồi sau restart, $delivery\_rate$ trả về `null` kèm ghi chú hạn chế, trong khi $storage\_rate = stored\_unique / tx\_attempted\_count$ vẫn đo lường độ tin cậy lưu bền chính xác.
    - Áp dụng cơ chế **Hard Cap cưỡng chế** cho `_pending_gap_intervals` (mặc định 1.000 intervals) để chống bão phân mảnh (fragmentation) khi nhận nhiều bản tin đến muộn xen kẽ trong thời gian ngắn.
 
 2. **An toàn đa luồng (Thread-Safety)**:

@@ -16,6 +16,7 @@ HISTORY_METRICS = frozenset({
     "is_dark", "fan_on", "led1_on", "led2_on", "led3_on", "heat_alarm",
     "uptime_ms", "smoke_raw", "smoke_alarm", "pump_on",
     "gas_raw", "gas_alarm", "gas_sensor_ok",
+    "door_safety_lock", "gas_sensor_fault",
 })
 HISTORY_STATS_METRICS = frozenset({"temperature_c", "humidity_pct", "smoke_raw", "gas_raw"})
 
@@ -147,11 +148,15 @@ class InMemoryStorage:
         os.replace(tmp, self._path)
 
     def save_telemetry(self, rec: dict) -> bool:
+        tx_count = rec.get("tx_count")
+        if tx_count is not None and (not isinstance(tx_count, int) or tx_count < 0):
+            raise ValueError(f"tx_count must be a non-negative integer, got {tx_count!r}")
         with self._lock:
             ingest = self._tracker.record_incoming(
                 rec.get("device_id"),
                 rec.get("boot_id"),
                 rec.get("seq"),
+                tx_count=tx_count,
                 now=rec.get("ts"),
             )
             if not ingest.stored:
@@ -298,8 +303,15 @@ class InMemoryStorage:
             evs = [
                 dict(e) for e in reversed(self._events)
                 if e.get("type") != "connection"
-                and ("error" in str(e.get("type", "")).lower()
-                     or e.get("type") in ("heat_alarm", "smoke_alarm", "dht_error", "gas_alarm", "gas_error"))
+                and (
+                    "error" in str(e.get("type", "")).lower()
+                    or "fault" in str(e.get("type", "")).lower()
+                    or e.get("type") in (
+                        "heat_alarm", "smoke_alarm", "dht_error", "gas_alarm", "gas_error",
+                        "gas_sensor_fault", "door_open_unconfirmed", "fan_rotation_unconfirmed",
+                        "alarm_response",
+                    )
+                )
                 and (start is None or e["ts"] >= start)
                 and (end is None or e["ts"] <= end)
             ]
@@ -329,6 +341,18 @@ class InMemoryStorage:
         avg_d = float(sum(durations) / len(durations)) if durations else None
         min_d = float(min(durations)) if durations else None
         max_d = float(max(durations)) if durations else None
+
+        confirm_durations = [
+            c["confirmed_ts"] - c["sent_ts"]
+            for c in cmds
+            if c.get("confirmed_ts") is not None and c.get("sent_ts") is not None
+            and c["confirmed_ts"] >= c["sent_ts"]
+        ]
+        avg_confirm_d = float(sum(confirm_durations) / len(confirm_durations)) if confirm_durations else None
+        min_confirm_d = float(min(confirm_durations)) if confirm_durations else None
+        max_confirm_d = float(max(confirm_durations)) if confirm_durations else None
+        confirmed_count = sum(1 for c in cmds if c.get("confirmed_ts") is not None)
+
         success_rate = float(ok / total) if total > 0 else None
 
         return {
@@ -337,10 +361,14 @@ class InMemoryStorage:
             "failed": failed,
             "timeout": timeout,
             "pending": pending,
+            "confirmed_count": confirmed_count,
             "success_rate": success_rate,
             "avg_duration_s": avg_d,
             "min_duration_s": min_d,
             "max_duration_s": max_d,
+            "avg_confirm_duration_s": avg_confirm_d,
+            "min_confirm_duration_s": min_confirm_d,
+            "max_confirm_duration_s": max_confirm_d,
         }
 
     def reliability_stats(self, device_id: Optional[str] = None,

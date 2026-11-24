@@ -55,27 +55,56 @@ HAVING count(*) > 1;
 ```
 - **Kết quả mong đợi**: 0 hàng (không tồn tại bản tin trùng).
 
-### 2.3. Thống kê Phân phối Telemetry theo Thiết bị và Phiên Khởi động
+### 2.3. Thống kê Phân phối Telemetry theo Thiết bị, Phiên Khởi động và Phiên Kết nối MQTT
+Truy vấn phân tích chi tiết dữ liệu theo bộ ba định danh `(device_id, boot_id, connection_id)`:
+
 ```sql
 SELECT
     device_id,
     boot_id,
+    connection_id,
     count(*)::bigint AS stored_packets,
     min(seq) AS min_seq,
     max(seq) AS max_seq,
+    min(tx_count) AS min_tx_count,
+    max(tx_count) AS max_tx_count,
     min(ts) AS first_seen,
     max(ts) AS last_seen
 FROM telemetry
 WHERE device_id IS NOT NULL AND boot_id IS NOT NULL
-GROUP BY device_id, boot_id
+GROUP BY device_id, boot_id, connection_id
 ORDER BY device_id, first_seen DESC;
+```
+
+### 2.4. Đối soát Tỷ lệ Phân phối (Delivery Rate) và Lưu trữ (Storage Rate) từ `tx_count`
+Truy vấn SQL đối soát độc lập tỷ lệ phân phối và tỷ lệ lưu trữ dựa trên bộ đếm phát $tx\_count$:
+
+```sql
+WITH session_stats AS (
+    SELECT
+        device_id,
+        boot_id,
+        count(DISTINCT seq)::bigint AS unique_stored_packets,
+        max(tx_count)::bigint AS max_tx_attempted
+    FROM telemetry
+    WHERE device_id IS NOT NULL AND boot_id IS NOT NULL AND seq IS NOT NULL
+    GROUP BY device_id, boot_id
+)
+SELECT
+    device_id,
+    boot_id,
+    unique_stored_packets,
+    max_tx_attempted,
+    round((unique_stored_packets::numeric / nullif(max_tx_attempted, 0) * 100), 2) AS storage_rate_pct
+FROM session_stats
+ORDER BY device_id, boot_id;
 ```
 
 ---
 
-## 3. Thống kê Lệnh Điều khiển (Command ACK Latency)
+## 3. Thống kê Lệnh Điều khiển & Độ trễ Xác nhận (Command ACK & Confirm Latency)
 
-Đo lường thời gian đáp ứng và tỷ lệ thực thi thành công của các lệnh điều khiển thiết bị:
+Đo lường thời gian đáp ứng ACK và thời gian xác nhận trạng thái thiết bị khớp trạng thái đích từ telemetry (`confirmed_ts`):
 
 ```sql
 SELECT
@@ -84,16 +113,20 @@ SELECT
     count(*) FILTER (WHERE status = 'failed')::bigint AS failed_count,
     count(*) FILTER (WHERE status = 'timeout')::bigint AS timeout_count,
     count(*) FILTER (WHERE status = 'pending')::bigint AS pending_count,
+    count(*) FILTER (WHERE confirmed_ts IS NOT NULL)::bigint AS confirmed_count,
     round((count(*) FILTER (WHERE status = 'ok')::numeric / nullif(count(*), 0) * 100), 2) AS success_rate_pct,
-    avg(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS avg_latency_s,
-    min(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS min_latency_s,
-    max(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS max_latency_s
+    avg(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS avg_ack_latency_s,
+    min(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS min_ack_latency_s,
+    max(extract(epoch from (ack_ts - sent_ts))::float8) FILTER (WHERE ack_ts IS NOT NULL AND sent_ts IS NOT NULL AND ack_ts >= sent_ts) AS max_ack_latency_s,
+    avg(extract(epoch from (confirmed_ts - sent_ts))::float8) FILTER (WHERE confirmed_ts IS NOT NULL AND sent_ts IS NOT NULL AND confirmed_ts >= sent_ts) AS avg_confirm_latency_s,
+    min(extract(epoch from (confirmed_ts - sent_ts))::float8) FILTER (WHERE confirmed_ts IS NOT NULL AND sent_ts IS NOT NULL AND confirmed_ts >= sent_ts) AS min_confirm_latency_s,
+    max(extract(epoch from (confirmed_ts - sent_ts))::float8) FILTER (WHERE confirmed_ts IS NOT NULL AND sent_ts IS NOT NULL AND confirmed_ts >= sent_ts) AS max_confirm_latency_s
 FROM commands;
 ```
 
 ---
 
-## 4. Truy vấn Lịch sử Kết nối và Sự kiện Lỗi
+## 4. Truy vấn Lịch sử Kết nối và Chuỗi Vòng đời Sự kiện (Event Lifecycle)
 
 ### 4.1. Lịch sử Mất kết nối và Trực tuyến (Online / Offline Events)
 ```sql
@@ -109,19 +142,40 @@ ORDER BY ts DESC, id DESC
 LIMIT 50;
 ```
 
-### 4.2. Lịch sử Cảnh báo Khẩn cấp và Sự cố Cảm biến (Gas, Fire, Sensor Errors)
+### 4.2. Truy vấn Chuỗi Vòng đời Sự kiện theo `event_id` (Event Lifecycle Tracking)
+```sql
+SELECT
+    event_id,
+    type,
+    alarm,
+    state,
+    value,
+    threshold,
+    reason,
+    to_char(ts, 'YYYY-MM-DD HH24:MI:SS.US') AS event_time,
+    uptime_ms
+FROM events
+WHERE event_id IS NOT NULL
+ORDER BY event_id, ts ASC;
+```
+
+### 4.3. Lịch sử Cảnh báo Khẩn cấp và Sự cố Cảm biến (Gas, Fire, Sensor Errors)
 ```sql
 SELECT
     extract(epoch from ts)::float8 AS ts,
     to_char(ts, 'YYYY-MM-DD HH24:MI:SS') AS event_time,
     type,
     state,
+    event_id,
+    alarm,
     value,
     threshold,
     reason
 FROM events
-WHERE type IN ('heat_alarm', 'smoke_alarm', 'dht_error', 'gas_alarm', 'gas_error')
-   OR type ILIKE '%error%'
+WHERE type IN (
+    'heat_alarm', 'smoke_alarm', 'dht_error', 'gas_alarm', 'gas_error',
+    'gas_sensor_fault', 'door_open_unconfirmed', 'fan_rotation_unconfirmed', 'alarm_response'
+) OR type ILIKE '%error%' OR type ILIKE '%fault%'
 ORDER BY ts DESC, id DESC;
 ```
 

@@ -569,3 +569,201 @@ def test_command_confirmed_ts_and_safety_failure_on_postgres(make):
         svc.send_command("fan", "off")
     failed = [c for c in s.list_commands() if c["detail"] == "safety_override_heat_alarm"]
     assert len(failed) == 1 and failed[0]["status"] == "failed"
+
+
+def test_telemetry_v2_columns_persistence_and_query(make):
+    s = make()
+    rec = tel(
+        1200.0,
+        29.5,
+        device_id="esp32-v2",
+        boot_id="boot-v2-1",
+        seq=1,
+        connection_id=101,
+        control_mode="auto",
+        backend_state="nominal",
+        tx_count=1,
+        door_safety_lock=True,
+        gas_sensor_fault=False,
+        active_alarms=["smoke_alarm"],
+    )
+    assert s.save_telemetry(rec) is True
+
+    with s._pool.connection() as conn:
+        row = conn.execute(
+            "SELECT connection_id, control_mode, backend_state, tx_count, "
+            "door_safety_lock, gas_sensor_fault, active_alarms "
+            "FROM telemetry WHERE device_id = 'esp32-v2' AND seq = 1"
+        ).fetchone()
+
+    assert row["connection_id"] == 101
+    assert row["control_mode"] == "auto"
+    assert row["backend_state"] == "nominal"
+    assert row["tx_count"] == 1
+    assert row["door_safety_lock"] is True
+    assert row["gas_sensor_fault"] is False
+    assert row["active_alarms"] == ["smoke_alarm"]
+
+    # History & history_page for new metrics
+    h_door = s.history("door_safety_lock", None, None)
+    assert len(h_door) == 1 and h_door[0]["value"] is True
+
+    h_fault = s.history_page("gas_sensor_fault", None, None, limit=10, offset=0)
+    assert len(h_fault) == 1 and h_fault[0]["value"] is False
+
+    # Negative tx_count raises ValueError
+    bad_rec = tel(1201.0, 29.5, device_id="esp32-v2", boot_id="boot-v2-1", seq=2, tx_count=-5)
+    with pytest.raises(ValueError, match="tx_count must be a non-negative integer"):
+        s.save_telemetry(bad_rec)
+
+
+def test_events_v2_event_id_and_lifecycle_on_postgres(make):
+    s = make()
+    # Lifecycle of alarm event: start -> retry -> escalated -> end
+    evt_id = "evt-alarm-cycle-101"
+    s.save_event({
+        "event_id": evt_id,
+        "type": "smoke_alarm",
+        "alarm": "smoke_alarm",
+        "state": "start",
+        "value": 2500.0,
+        "threshold": 2000.0,
+        "reason": "smoke threshold exceeded",
+        "uptime_ms": 10000,
+        "ts": 1300.0,
+    })
+    s.save_event({
+        "event_id": evt_id,
+        "type": "smoke_alarm",
+        "alarm": "smoke_alarm",
+        "state": "retry",
+        "value": 2600.0,
+        "threshold": 2000.0,
+        "reason": "smoke alarm buzzer retry",
+        "uptime_ms": 11000,
+        "ts": 1301.0,
+    })
+    s.save_event({
+        "event_id": evt_id,
+        "type": "smoke_alarm",
+        "alarm": "smoke_alarm",
+        "state": "escalated",
+        "value": 3100.0,
+        "threshold": 3000.0,
+        "reason": "critical smoke level reached",
+        "uptime_ms": 12000,
+        "ts": 1302.0,
+    })
+    s.save_event({
+        "event_id": evt_id,
+        "type": "smoke_alarm",
+        "alarm": "smoke_alarm",
+        "state": "end",
+        "value": 1800.0,
+        "threshold": 2000.0,
+        "reason": "smoke cleared",
+        "uptime_ms": 15000,
+        "ts": 1305.0,
+    })
+
+    # Non-unique check: all 4 entries must exist
+    evs = s.list_events(limit=10)
+    matching = [e for e in evs if e.get("event_id") == evt_id]
+    assert len(matching) == 4
+    # Returned newest-first
+    states = [e["state"] for e in matching]
+    assert states == ["end", "escalated", "retry", "start"]
+    for e in matching:
+        assert e["alarm"] == "smoke_alarm"
+        assert e["event_id"] == evt_id
+
+
+def test_commands_confirmed_ts_and_stats_on_postgres(make):
+    s = make()
+    t0 = 1400.0
+    # Command 1: confirmed
+    s.save_command({
+        "cmd_id": "c-v2-1",
+        "device": "fan",
+        "action": "on",
+        "source": "manual",
+        "status": "ok",
+        "sent_ts": t0,
+        "ack_ts": t0 + 0.2,
+        "confirmed_ts": t0 + 0.8,
+        "detail": "fan running confirmed",
+        "ts": t0,
+    })
+    # Command 2: ok but ack only (not confirmed)
+    s.save_command({
+        "cmd_id": "c-v2-2",
+        "device": "door",
+        "action": "open",
+        "source": "manual",
+        "status": "ok",
+        "sent_ts": t0 + 2.0,
+        "ack_ts": t0 + 2.4,
+        "confirmed_ts": None,
+        "detail": "door opening",
+        "ts": t0 + 2.0,
+    })
+    # Command 3: update with confirmed_ts
+    s.save_command({
+        "cmd_id": "c-v2-3",
+        "device": "pump",
+        "action": "on",
+        "source": "auto",
+        "status": "pending",
+        "sent_ts": t0 + 4.0,
+        "ts": t0 + 4.0,
+    })
+    s.update_command("c-v2-3", status="ok", ack_ts=t0 + 4.3, confirmed_ts=t0 + 5.0)
+
+    stats = s.command_stats(start=t0 - 1.0, end=t0 + 10.0)
+    assert stats["total"] == 3
+    assert stats["ok"] == 3
+    assert stats["confirmed_count"] == 2
+    # Latencies:
+    # ack durations: 0.2, 0.4, 0.3 -> avg = 0.3
+    assert stats["avg_duration_s"] == pytest.approx(0.3, abs=0.01)
+    # confirm durations: (1400.8 - 1400.0 = 0.8), (1405.0 - 1404.0 = 1.0) -> avg = 0.9, min = 0.8, max = 1.0
+    assert stats["avg_confirm_duration_s"] == pytest.approx(0.9, abs=0.01)
+    assert stats["min_confirm_duration_s"] == pytest.approx(0.8, abs=0.01)
+    assert stats["max_confirm_duration_s"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_v2_error_events_filter_on_postgres(make):
+    s = make()
+    t0 = 1500.0
+    s.save_event({"type": "gas_sensor_fault", "state": "start", "reason": "ADC disconnect", "ts": t0})
+    s.save_event({"type": "door_open_unconfirmed", "state": "start", "reason": "reed switch timeout", "ts": t0 + 1})
+    s.save_event({"type": "fan_rotation_unconfirmed", "state": "start", "reason": "current sensor zero", "ts": t0 + 2})
+    s.save_event({"type": "alarm_response", "state": "escalated", "reason": "buzzer no ack", "ts": t0 + 3})
+    s.save_event({"type": "pump", "state": "start", "reason": "normal pump cycle", "ts": t0 + 4})
+
+    errs = s.list_error_events()
+    err_types = {e["type"] for e in errs}
+    assert "gas_sensor_fault" in err_types
+    assert "door_open_unconfirmed" in err_types
+    assert "fan_rotation_unconfirmed" in err_types
+    assert "alarm_response" in err_types
+    assert "pump" not in err_types
+
+
+def test_migration_v2_idempotent_and_indexes(make):
+    s = make()
+    from app.pg_storage import MIGRATION_SQL
+
+    with s._pool.connection() as conn:
+        conn.execute(MIGRATION_SQL)
+        conn.execute(MIGRATION_SQL)
+
+        # Check indexes exist in pg_indexes
+        idxs = conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE tablename IN ('telemetry', 'events', 'commands')"
+        ).fetchall()
+        idx_names = {r["indexname"] for r in idxs}
+
+    assert "telemetry_device_boot_conn_idx" in idx_names
+    assert "telemetry_dedup_idx" in idx_names
+    assert "events_event_id_idx" in idx_names
