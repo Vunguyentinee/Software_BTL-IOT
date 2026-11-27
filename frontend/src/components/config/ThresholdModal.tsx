@@ -19,6 +19,8 @@ interface ThresholdModalProps {
   onClose: () => void;
   currentThresholds: DeviceThresholds;
   onSave: (newThresholds: DeviceThresholds) => Promise<void>;
+  /** Không phải admin: chỉ xem ngưỡng, không lưu được. */
+  readOnly?: boolean;
 }
 
 export const ThresholdModal: React.FC<ThresholdModalProps> = ({
@@ -26,6 +28,7 @@ export const ThresholdModal: React.FC<ThresholdModalProps> = ({
   onClose,
   currentThresholds,
   onSave,
+  readOnly = false,
 }) => {
   const [formData, setFormData] = useState<DeviceThresholds>({ ...currentThresholds });
   const [isSaving, setIsSaving] = useState(false);
@@ -84,6 +87,11 @@ export const ThresholdModal: React.FC<ThresholdModalProps> = ({
 
     if (formData.smoke_alarm_ppm < 50 || formData.smoke_alarm_ppm > 1000) {
       setErrorMsg('Ngưỡng nồng độ khói phải nằm trong khoảng 50 - 1000 PPM!');
+      return;
+    }
+
+    if (readOnly) {
+      setErrorMsg('Chỉ tài khoản quản trị (admin) mới được sửa ngưỡng.');
       return;
     }
 
@@ -307,9 +315,13 @@ export const ThresholdModal: React.FC<ThresholdModalProps> = ({
                 Hủy
               </button>
 
+              {readOnly && (
+                <span className="text-[11px] text-amber-700 font-medium">Chỉ admin được sửa ngưỡng</span>
+              )}
               <button
                 type="submit"
-                disabled={isSaving}
+                disabled={isSaving || readOnly}
+                title={readOnly ? 'Chỉ tài khoản quản trị (admin) mới được sửa ngưỡng' : undefined}
                 className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-xs transition-all active:scale-95 disabled:opacity-50"
               >
                 {isSaving ? (

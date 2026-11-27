@@ -19,10 +19,22 @@
 | 7 | Rủi ro thấp | Thuộc tính tương thích `_pending_gaps` dựng tối đa ~500 phần tử mỗi khoảng khi truy cập; không nằm trên đường nóng | Chỉ dùng trong test |
 | 8 | **Lỗi (phía backend, của Vũ)** | `MqttBridge.publish_cmd` không báo lỗi khi mất kết nối: paho xếp hàng QoS 1 rồi gửi lại sau khi nối lại → **lệnh cũ có thể bị thực thi muộn** | **Đã sửa:** từ chối khi `is_connected()` sai hoặc `rc != 0` (→ `PublishFailed` → 503) |
 
+### 1.1 Gộp code nhóm ngày 24/11 (PR #3 của Thái, commit `53a1662`/`e4c60eb` của Đức)
+
+| # | Mức | Phát hiện | Xử lý |
+|---|---|---|---|
+| 1 | Đúng | PR #3: schema chỉ **thêm** cột/index (`ADD COLUMN IF NOT EXISTS`: `connection_id`, `control_mode`, `tx_count`, `door_safety_lock`, `active_alarms`, `events.event_id`, `commands.confirmed_ts`…), dữ liệu đã đo không bị đổi; `delivery_rate` tính từ `tx_count` (đóng mục "chưa dùng `tx_count`" ở 2.5) | Giữ nguyên. Đã chạy toàn bộ test trên PostgreSQL 16 thật; **chưa review sâu công thức `delivery_rate` khi LRU/restart** |
+| 2 | **Bảo mật** | Frontend mới nối **thẳng broker MQTT** từ trình duyệt (`mqttService.ts`, `ws://…:9001`) và publish lệnh khi backend không phản hồi → bỏ qua đăng nhập, phân quyền, `cmd_id`/ACK, phiên đích. (Thực tế không chạy được vì broker không mở 9001 và cấm ẩn danh, nhưng trái yêu cầu "không cho client trái phép publish lệnh") | **Đã bỏ** `mqttService.ts` và gói `mqtt`; lệnh và dữ liệu chỉ đi qua backend |
+| 3 | **Lỗi che giấu** | Nút Operator ACK gửi `event_id` bịa (`alarm_<thời gian>`) → backend luôn 404, nhưng giao diện vẫn báo "đã ghi nhận xác nhận" | **Đã sửa:** chỉ gửi `event_id` thật trong `telemetry.active_alarms` (chưa `operator_ack`); lỗi 403/404/503 hiện ra cho người dùng; chỉ hiện "đã xác nhận" khi backend trả 200 |
+| 4 | Dễ nhầm | Web mặc định ở chế độ **giả lập cục bộ** và hiển thị "online" + `boot_id`/`connection_id` giả khi chưa có dữ liệu thật; chọn kịch bản simulator backend cũng bật giả lập cục bộ | **Đã sửa:** mặc định dữ liệu thật qua backend (giả lập chỉ bật khi người dùng bấm); không hiện mã giả; kịch bản simulator backend không bật giả lập cục bộ |
+| 5 | Thiếu | Các thành phần mới (`ControlDashboard`, nút ACK của `AlertBanner`) chưa theo vai trò | **Đã thêm:** `viewer` bị khóa nút điều khiển và nút ACK (backend vẫn chặn 403) |
+
 ## 2. Test tự động (pytest, không cần Docker)
 
 Chạy: `cd backend && .venv\Scripts\python -m pytest -q` → **365 passed, 47 skipped** (47 test PostgreSQL bị bỏ qua khi không đặt `BTL_TEST_DATABASE_URL`).
 Có PostgreSQL thật (`docker run … postgres:16 -p 55432:5432`, đặt `BTL_TEST_DATABASE_URL`) → **412 passed, 0 skipped**. Frontend: `npx vitest run` → **83 passed**.
+
+**Sau khi gộp code nhóm ngày 24/11 + đăng nhập:** backend **496 passed, 0 skipped** (PostgreSQL 16 thật); frontend **101 passed** (thêm `tests/alarmAck.test.ts`: ACK chỉ dùng `event_id` thật, lỗi không bị nuốt). Docker thật: `live_security_check` **41/41**, `live_flow_check` **10/10**; bộ kịch bản lỗi (project riêng `btlfault`, `SIM_CHECK_EXPIRY=0` như lần đo chính thức) **32/33**, chỉ F2h-e FAIL như trước, không ca nào đổi PASS/FAIL. Số đo lần chạy này (chỉ để đối chiếu, **không thay** số liệu chính thức trong `fault_results_v2.json`): F5a ACK avg/P95/max 30.9/50.3/63.3 ms; F5b 9.4/15.6/15.6 ms; F1a 1.9 s; F3a 3.5 s; F4e CPU max 20.3 % (lần trước 12.1 %, một mẫu đỉnh trong 11 mẫu), RAM 46.4 MiB.
 
 | ID | Nội dung | Đầu vào | Mong đợi | Thực tế | Kết quả | Minh chứng |
 |---|---|---|---|---|---|---|
@@ -53,11 +65,16 @@ Có PostgreSQL thật (`docker run … postgres:16 -p 55432:5432`, đặt `BTL_T
 | SEC-06 | Hạ quyền user trong cấu hình | Token cũ mang claim `admin` của `viewer1` vẫn chỉ có quyền viewer (403) | PASS |
 | SEC-07 | Dò mật khẩu | 5 lần sai → 429 + Retry-After; hết 60 s thì đăng nhập lại được; user khác không bị ảnh hưởng; không lộ user nào tồn tại | PASS |
 | SEC-08 | Quá nhiều yêu cầu điều khiển | 429 + `Retry-After`, tính theo từng người dùng | PASS |
-| SEC-09 | Chưa cấu hình user / khóa JWT yếu | Điều khiển trả 503 `auth_not_configured`, không mở cửa; đọc vẫn dùng được | PASS |
+| SEC-09 | Chưa cấu hình user / khóa JWT yếu | Điều khiển **và xem** đều trả 503 `auth_not_configured`, không mở cửa; chỉ `/api/health` còn trả lời | PASS |
 | SEC-10 | Định dạng `BTL_USERS` | Mật khẩu ngắn, role lạ, trùng tên, sai số trường → `ValueError` | PASS |
 | SEC-11 | `.env`, `docker/secrets/` nằm ngoài git | `git check-ignore` xác nhận | PASS |
 | SEC-12 | Bridge đăng nhập MQTT bằng tài khoản cấu hình | `username_pw_set` được gọi đúng | PASS |
-| SEC-13 | Frontend tự đăng nhập, gắn Bearer cho POST/PUT (GET không), gia hạn khi còn < 60 s, 401 thử lại đúng 1 lần, 403 báo nguyên văn | — | PASS |
+| SEC-13 | ~~Frontend tự đăng nhập~~ (đã thay bằng SEC-14..18) | — | — |
+| SEC-14 | 15 API xem dữ liệu không token / token rác (`tests/test_read_auth.py`) | 401 + `WWW-Authenticate: Bearer`; `viewer` đọc được; `/api/health` vẫn mở | PASS |
+| SEC-15 | 100 yêu cầu đọc liên tiếp rồi gửi lệnh | Lệnh vẫn 200: đọc không tính vào hạn mức điều khiển (web poll ACK không bị 429) | PASS |
+| SEC-16 | WebSocket: không gửi token / token rác / tin đầu sai dạng / không phải JSON | Đóng mã 4401, không nhận snapshot, không vào danh sách broadcast; token đúng → snapshot + broadcast | PASS |
+| SEC-17 | `/api/auth/me` | 401 khi không token; trả đúng `username`, `role` từng vai trò | PASS |
+| SEC-18 | Frontend (`authService.test.ts`, `websocketAuth.test.ts`, `integration.test.ts`): không tự đăng nhập; gửi đúng tài khoản người nhập; phiên trong `sessionStorage` không chứa mật khẩu; bỏ phiên hết hạn/hỏng; mọi request (cả GET) gắn Bearer; 401 → đăng xuất, không thử lại; 403 giữ phiên; WS gửi token ở tin đầu (không trong URL), 4401 → đăng xuất và không kết nối lại; viewer bị chặn gửi lệnh trước khi gọi mạng | — | PASS |
 
 ### 2.2 Bảo mật — kiểm chứng trên Docker thật
 
@@ -77,6 +94,15 @@ Stack cô lập (`docker compose -p btlsec`, cổng 18831/18001/18301/18432, `.e
 | API-10 | `/api/health` | `mqtt.connected=true`, `storage.ok=true` | PASS |
 | LAT-01, REL-0x | `/api/metrics/latency` và 4 endpoint reliability | 200, có số liệu | PASS |
 | API-11 | 7 lần đăng nhập sai liên tiếp | `[401,401,401,401,401,429,429]` | PASS |
+| READ-01 | `GET /api/state`, `/commands`, `/events`, `/config`, `/history` không token (bản bắt đăng nhập) | 401 ×5 | PASS |
+| READ-02 | `/api/auth/me` | `{"username":"ui","role":"operator"}` | PASS |
+| WS-01..03 | WebSocket không token / token rác / token đúng | đóng 4401 / đóng 4401 / nhận `snapshot` | PASS |
+| WEB-01 | Trang web (`/config.js`, `index.html`) không chứa `UI_PASSWORD`/`ADMIN_PASSWORD` | Không lộ | PASS |
+| WEB-02 | Bundle JS của web không còn client MQTT (`mqtt://`, `:9001`, `publishCommand`) | 0 kết quả | PASS |
+| ALARM-ACK-01 | Simulator `smoke_danger` → `POST /api/alarms/<event_id thật>/ack` (operator) | 200 `{event_id, source: operator, by: ui}` | PASS |
+| ALARM-ACK-02 | `POST /api/alarms/alarm_123/ack` (mã bịa như web cũ gửi) | 404 `alarm_not_found` (web mới báo lỗi, không báo thành công) | PASS |
+
+Sau khi bỏ tự đăng nhập (stack chính, `.env` thật): `live_security_check.py` **41/41 PASS**, `live_flow_check.py` **10/10 PASS**. Qua nginx cổng web: không token → 401; có token → state, CSV, WebSocket đều chạy.
 | NET-01 | PostgreSQL chỉ mở cho máy chủ | `docker compose ps`: `127.0.0.1:18432->5432` | PASS |
 | WEB-01 | nginx sinh `config.js` và chuyển `/api/auth/login` | `uiUsername: "ui"`; đăng nhập sai qua nginx → 401 | PASS |
 
@@ -148,7 +174,7 @@ Ghi chú: chênh lệch giữa F5a và F5b không chứng minh tải làm hệ t
 
 1. Mất gói ở **cuối** luồng telemetry không phát hiện được bằng khoảng hở `seq` (công tắc tải không bỏ gói cuối).
 2. Bộ đếm reliability là bộ đếm trong RAM của tiến trình (mất khi restart); `stored_count` thì bền.
-3. `tx_count` đã có trong telemetry nhưng backend chưa dùng để tính `delivery_rate`.
+3. ~~`tx_count` chưa dùng để tính `delivery_rate`~~ — đã có trong PR #3 của Thái (xem mục 1.1).
 4. Chưa thử: ESP32 thật, mất WiFi thật, nhiều thiết bị đồng thời, chạy dài hạn, PostgreSQL đầy đĩa.
 
 ## 3. Việc còn lại (chưa có kết quả)

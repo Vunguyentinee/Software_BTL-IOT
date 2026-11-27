@@ -12,6 +12,8 @@ import { HouseSensors } from './HouseSensors';
 interface HouseDigitalTwinProps {
   telemetry: ESP32Telemetry;
   onModeChange?: (mode: SystemMode) => void;
+  /** Tài khoản chỉ xem: khóa các nút điều khiển nhanh. */
+  readOnly?: boolean;
 }
 
 /** Fallback khi đang tải 3D scene */
@@ -58,7 +60,7 @@ function StatusOverlay({ telemetry }: { telemetry: ESP32Telemetry }) {
   );
 }
 
-export const HouseDigitalTwin: React.FC<HouseDigitalTwinProps> = ({ telemetry, onModeChange }) => {
+export const HouseDigitalTwin: React.FC<HouseDigitalTwinProps> = ({ telemetry, onModeChange, readOnly = false }) => {
   const [showHelp, setShowHelp] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [loadingDevice, setLoadingDevice] = useState<DeviceTarget | null>(null);
@@ -67,6 +69,7 @@ export const HouseDigitalTwin: React.FC<HouseDigitalTwinProps> = ({ telemetry, o
   const isAuto = system_mode === 'auto';
 
   const handleQuickCommand = async (target: DeviceTarget, newValue: boolean) => {
+    if (readOnly) return;
     if (isAuto) {
       onModeChange?.('manual');
       return;
@@ -110,6 +113,7 @@ export const HouseDigitalTwin: React.FC<HouseDigitalTwinProps> = ({ telemetry, o
       <div className="absolute top-3 right-3 z-10 flex flex-wrap items-center gap-1.5 bg-slate-900/90 backdrop-blur-md p-1.5 rounded-xl border border-slate-700/60 shadow-xl">
         {/* Nút Chuyển chế độ Tự động / Thủ công */}
         <button
+          disabled={readOnly}
           onClick={() => onModeChange?.(isAuto ? 'manual' : 'auto')}
           className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all shadow ${
             isAuto
@@ -125,7 +129,7 @@ export const HouseDigitalTwin: React.FC<HouseDigitalTwinProps> = ({ telemetry, o
 
         {/* Nút Quạt (Fan) */}
         <button
-          disabled={loadingDevice === 'fan'}
+          disabled={readOnly || loadingDevice === 'fan'}
           onClick={() => handleQuickCommand('fan', !fan_on)}
           className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm ${
             fan_on
@@ -144,7 +148,7 @@ export const HouseDigitalTwin: React.FC<HouseDigitalTwinProps> = ({ telemetry, o
 
         {/* Nút Cửa (Door) */}
         <button
-          disabled={loadingDevice === 'door'}
+          disabled={readOnly || loadingDevice === 'door'}
           onClick={() => handleQuickCommand('door', door_command !== 'open')}
           className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm ${
             door_command === 'open'
@@ -165,7 +169,7 @@ export const HouseDigitalTwin: React.FC<HouseDigitalTwinProps> = ({ telemetry, o
 
         {/* Nút Đèn LED1 */}
         <button
-          disabled={loadingDevice === 'led1'}
+          disabled={readOnly || loadingDevice === 'led1'}
           onClick={() => handleQuickCommand('led1', !led1_on)}
           className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm ${
             led1_on

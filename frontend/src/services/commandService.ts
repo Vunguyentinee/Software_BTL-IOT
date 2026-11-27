@@ -4,6 +4,7 @@ import { mockService } from './mockData';
 import { httpClient } from './api/httpClient';
 import { BackendCommand } from '../types/api';
 import { mapTargetToBackendCommand } from './api/mappers';
+import { authService } from './api/authService';
 
 /** Dịch các mã lỗi an toàn và mã chi tiết từ ESP32 sang tiếng Việt thân thiện */
 export function translateCommandDetail(detail: string | null | undefined): string | null {
@@ -128,6 +129,14 @@ export class CommandService {
     const actionText = this.getActionText(target, value);
     const startTime = Date.now();
     const commandId = `cmd_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+    // 0. Đã đăng nhập vào backend mà không có quyền điều khiển: từ chối ngay (backend cũng trả 403)
+    if (status.isServerConnected && !authService.hasRole('operator')) {
+      const errorMsg = 'Tài khoản chỉ xem không có quyền điều khiển thiết bị.';
+      this.addLog({ id: commandId, target, deviceName, actionText, value, status: 'error',
+                    timestamp: Date.now(), message: errorMsg, latencyMs: 0 });
+      throw new Error(errorMsg);
+    }
 
     // 1. Kiểm tra an toàn: Không cho phép điều khiển khi đang ở chế độ Tự động (Auto)
     if (currentTelemetry.system_mode === 'auto') {

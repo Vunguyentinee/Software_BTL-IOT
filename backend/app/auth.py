@@ -167,12 +167,15 @@ class AuthManager:
             raise unauthorized
         return Principal(name=sub, role=entry[1])   # quyền hiệu lực = cấu hình hiện tại
 
-    def require(self, authorization: Optional[str], min_role: str) -> Principal:
+    def require(self, authorization: Optional[str], min_role: str, rate_limited: bool = True) -> Principal:
+        """`rate_limited=False` cho route chỉ đọc: web poll liên tục, không được ăn vào hạn mức điều khiển."""
         if not self.configured:
             raise HTTPException(503, "auth_not_configured")
         principal = self.authenticate(authorization)
         if ROLE_LEVEL[principal.role] < ROLE_LEVEL[min_role]:
             raise HTTPException(403, "forbidden")
+        if not rate_limited:
+            return principal
         wait = self._control_limiter.hit(principal.name)
         if wait > 0:
             raise HTTPException(429, "rate_limited", headers={"Retry-After": str(max(1, math.ceil(wait)))})

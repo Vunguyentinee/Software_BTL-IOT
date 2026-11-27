@@ -30,6 +30,9 @@ METRICS = {
 }
 
 
+WS_AUTH_TIMEOUT_S = 5.0
+
+
 class WsHub:
     def __init__(self):
         self.clients: list = []
@@ -75,6 +78,11 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
             return auth.require(authorization, min_role)
         return Depends(dependency)
 
+    def read_dependency(authorization: Optional[str] = Header(None)):
+        return auth.require(authorization, "viewer", rate_limited=False)
+
+    viewer = [Depends(read_dependency)]
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         hub.loop = asyncio.get_running_loop()
@@ -103,7 +111,11 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
             raise HTTPException(503, "auth_not_configured")
         return auth.login(body.username, body.password)
 
-    @app.get("/api/state")
+    @app.get("/api/auth/me")
+    def me(user: Principal = Depends(read_dependency)):
+        return {"username": user.name, "role": user.role}
+
+    @app.get("/api/state", dependencies=viewer)
     def get_state():
         return service.get_state()
 
@@ -111,7 +123,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
     def health():
         return service.health()
 
-    @app.get("/api/history")
+    @app.get("/api/history", dependencies=viewer)
     def history(metric: str, from_: Optional[str] = Query(None, alias="from"),
                 to: Optional[str] = None):
         if metric not in METRICS:
@@ -123,7 +135,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
     def _history_range(from_: Optional[str], to: Optional[str]):
         return _parse_time(from_), _parse_time(to)
 
-    @app.get("/api/history/stats")
+    @app.get("/api/history/stats", dependencies=viewer)
     def history_stats(metric: str, from_: Optional[str] = Query(None, alias="from"),
                       to: Optional[str] = None):
         start, end = _history_range(from_, to)
@@ -132,7 +144,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
         except ValueError as e:
             raise HTTPException(422, str(e))
 
-    @app.get("/api/history/page")
+    @app.get("/api/history/page", dependencies=viewer)
     def history_page(metric: str, from_: Optional[str] = Query(None, alias="from"),
                      to: Optional[str] = None, limit: int = Query(100, ge=1, le=1000),
                      offset: int = Query(0, ge=0)):
@@ -142,7 +154,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
         except ValueError as e:
             raise HTTPException(422, str(e))
 
-    @app.get("/api/history.csv")
+    @app.get("/api/history.csv", dependencies=viewer)
     def history_csv(metric: str, from_: Optional[str] = Query(None, alias="from"),
                     to: Optional[str] = None, batch_size: int = Query(1000, ge=1, le=1000)):
         start, end = _history_range(from_, to)
@@ -155,7 +167,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
             chunks, media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{metric}.csv"'})
 
-    @app.get("/api/history/reliability")
+    @app.get("/api/history/reliability", dependencies=viewer)
     def history_reliability(device_id: Optional[str] = None,
                             from_: Optional[str] = Query(None, alias="from"),
                             to: Optional[str] = None):
@@ -165,7 +177,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
         except ValueError as e:
             raise HTTPException(422, str(e))
 
-    @app.get("/api/history/commands/stats")
+    @app.get("/api/history/commands/stats", dependencies=viewer)
     def history_command_stats(from_: Optional[str] = Query(None, alias="from"),
                               to: Optional[str] = None):
         start, end = _history_range(from_, to)
@@ -174,33 +186,33 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
         except ValueError as e:
             raise HTTPException(422, str(e))
 
-    @app.get("/api/history/connections")
+    @app.get("/api/history/connections", dependencies=viewer)
     def history_connections(limit: int = Query(100, ge=1, le=1000),
                             from_: Optional[str] = Query(None, alias="from"),
                             to: Optional[str] = None):
         start, end = _history_range(from_, to)
         return service.storage.list_connection_events(limit, start, end)
 
-    @app.get("/api/history/errors")
+    @app.get("/api/history/errors", dependencies=viewer)
     def history_errors(limit: int = Query(100, ge=1, le=1000),
                        from_: Optional[str] = Query(None, alias="from"),
                        to: Optional[str] = None):
         start, end = _history_range(from_, to)
         return service.storage.list_error_events(limit, start, end)
 
-    @app.get("/api/metrics/latency")
+    @app.get("/api/metrics/latency", dependencies=viewer)
     def metrics_latency():
         return service.latency_stats()
 
-    @app.get("/api/events")
+    @app.get("/api/events", dependencies=viewer)
     def events(limit: int = Query(100, ge=1, le=1000)):
         return service.storage.list_events(limit)
 
-    @app.get("/api/commands")
+    @app.get("/api/commands", dependencies=viewer)
     def commands(limit: int = Query(100, ge=1, le=1000)):
         return service.storage.list_commands(limit)
 
-    @app.get("/api/commands/{cmd_id}")
+    @app.get("/api/commands/{cmd_id}", dependencies=viewer)
     def get_command(cmd_id: str):
         cmd = service.get_command(cmd_id)
         if cmd is None:
@@ -235,7 +247,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
         except PublishFailed:
             raise HTTPException(503, "mqtt_publish_failed")
 
-    @app.get("/api/config")
+    @app.get("/api/config", dependencies=viewer)
     def get_config():
         return service.get_config()
 
@@ -243,7 +255,7 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
     def put_config(thresholds: Thresholds):
         return service.set_config(thresholds)
 
-    @app.get("/api/sim")
+    @app.get("/api/sim", dependencies=viewer)
     def get_sim():
         return service.get_sim()
 
@@ -260,7 +272,22 @@ def create_app(service: Service, hub: Optional[WsHub] = None, lifespan_extra=Non
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket):
+        """Tin đầu tiên phải là {"kind":"auth","token":"<JWT>"} trong WS_AUTH_TIMEOUT_S giây.
+
+        Không đặt token trong URL (tránh lộ qua log proxy). Sai/thiếu -> đóng mã 4401, không gửi dữ liệu.
+        """
         await ws.accept()
+        try:
+            msg = await asyncio.wait_for(ws.receive_json(), timeout=WS_AUTH_TIMEOUT_S)
+            token = msg.get("token") if isinstance(msg, dict) and msg.get("kind") == "auth" else None
+            if not isinstance(token, str) or not token:
+                raise HTTPException(401, "not_authenticated")
+            auth.require("Bearer " + token, "viewer", rate_limited=False)
+        except WebSocketDisconnect:
+            return
+        except Exception:
+            await ws.close(code=4401)
+            return
         hub.clients.append(ws)
         try:
             await ws.send_json({"kind": "snapshot", "data": service.get_state()})

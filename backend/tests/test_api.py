@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import WsHub, create_app
-from tests.conftest import EXAMPLE, authed_client
+from tests.conftest import CREDENTIALS, EXAMPLE, authed_client
 
 
 @pytest.fixture
@@ -78,7 +78,10 @@ def test_websocket_sends_snapshot_then_broadcast(service):
     hub = WsHub()
     app = create_app(service, hub)
     with TestClient(app) as c:
+        user, pw = CREDENTIALS["viewer"]
+        tok = c.post("/api/auth/login", json={"username": user, "password": pw}).json()["access_token"]
         with c.websocket_connect("/ws") as ws:
+            ws.send_json({"kind": "auth", "token": tok})
             assert ws.receive_json()["kind"] == "snapshot"
             hub.threadsafe_broadcast({"kind": "telemetry", "data": {"x": 1}})
             assert ws.receive_json() == {"kind": "telemetry", "data": {"x": 1}}

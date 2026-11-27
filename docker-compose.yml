@@ -59,10 +59,7 @@ services:
   frontend:
     build: ./frontend
     restart: unless-stopped
-    environment:
-      # Tài khoản vai trò operator để giao diện tự đăng nhập (xem frontend/README.md về giới hạn)
-      UI_USERNAME: ${UI_USERNAME:-ui}
-      UI_PASSWORD: ${UI_PASSWORD:?Chưa có .env - chạy docker/make-env.ps1}
+    # Không truyền mật khẩu nào vào web: người dùng tự đăng nhập (tài khoản khai báo ở BTL_USERS của backend)
     ports:
       - "${WEB_PORT:-3000}:80"
     depends_on:

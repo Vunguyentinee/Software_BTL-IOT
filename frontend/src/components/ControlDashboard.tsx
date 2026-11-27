@@ -18,28 +18,29 @@ import {
   Zap,
 } from 'lucide-react';
 import { ESP32Telemetry } from '../types/telemetry';
-import { MqttConnectionStatus } from '../services/mqttService';
 
 export interface ControlDashboardProps {
   telemetry: ESP32Telemetry;
-  mqttStatus: MqttConnectionStatus;
   isMockMode: boolean;
   onToggleMockMode: (mock: boolean) => void;
   onDeviceCommand: (device: 'door' | 'fan' | 'led1', action: 'auto' | 'on' | 'off' | 'open' | 'close') => Promise<void>;
-  onAckAlarm: () => Promise<void>;
+  /** Trả về true khi xác nhận thật sự thành công (backend đã nhận). */
+  onAckAlarm: () => Promise<boolean>;
   onSelectMockScenario?: (scenarioId: string) => void;
   isBackendConnected?: boolean;
+  /** Tài khoản chỉ xem: khóa các nút điều khiển và nút xác nhận cảnh báo (backend vẫn kiểm tra lại). */
+  readOnly?: boolean;
 }
 
 export const ControlDashboard: React.FC<ControlDashboardProps> = ({
   telemetry,
-  mqttStatus,
   isMockMode,
   onToggleMockMode,
   onDeviceCommand,
   onAckAlarm,
   onSelectMockScenario,
   isBackendConnected = false,
+  readOnly = false,
 }) => {
   const [loadingDevice, setLoadingDevice] = useState<string | null>(null);
   const [ackLoading, setAckLoading] = useState(false);
@@ -98,9 +99,10 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
   const handleOperatorAck = async () => {
     setAckLoading(true);
     try {
-      await onAckAlarm();
-      setAckSuccess(true);
-      setTimeout(() => setAckSuccess(false), 5000);
+      if (await onAckAlarm()) {
+        setAckSuccess(true);
+        setTimeout(() => setAckSuccess(false), 5000);
+      }
     } finally {
       setAckLoading(false);
     }
@@ -158,7 +160,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
             />
             {isMockMode
               ? 'Mô phỏng độc lập (Cách ly hoàn toàn với phần cứng)'
-              : 'Đang kết nối phần cứng thực (Lệnh gửi trực tiếp ESP32)'}
+              : isBackendConnected ? 'Dữ liệu thật qua backend (lệnh có đăng nhập + ACK)' : 'Mất kết nối backend: số liệu có thể đã cũ'}
           </span>
           <span className="font-mono text-[9px] font-bold uppercase">
             {isMockMode ? 'Offline Sandbox' : 'Hardware Live'}
@@ -174,7 +176,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
                 className={`w-2 h-2 rounded-full ${
                   isMockMode
                     ? 'bg-amber-500'
-                    : mqttStatus === 'connected' || isBackendConnected
+                    : isBackendConnected
                     ? 'bg-emerald-500 animate-pulse'
                     : 'bg-rose-500'
                 }`}
@@ -183,15 +185,13 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
                 className={
                   isMockMode
                     ? 'text-amber-700'
-                    : mqttStatus === 'connected' || isBackendConnected
+                    : isBackendConnected
                     ? 'text-emerald-700'
                     : 'text-rose-700'
                 }
               >
                 {isMockMode
                   ? 'SIMULATED'
-                  : mqttStatus === 'connected'
-                  ? 'CONNECTED'
                   : isBackendConnected
                   ? 'VIA BACKEND'
                   : 'DISCONNECTED'}
@@ -211,7 +211,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
             <span className="text-slate-500 block text-[10px] uppercase font-sans">Boot ID</span>
             <div className="flex items-center gap-1 mt-1 font-bold text-slate-700 truncate">
               <Cpu className="w-3 h-3 text-indigo-500 shrink-0" />
-              <span>{telemetry.boot_id || 'boot-e92a'}</span>
+              <span>{telemetry.boot_id || '—'}</span>
             </div>
           </div>
 
@@ -219,7 +219,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
             <span className="text-slate-500 block text-[10px] uppercase font-sans">Connection ID</span>
             <div className="flex items-center gap-1 mt-1 font-bold text-slate-700">
               <span className="text-slate-400">#</span>
-              <span>{telemetry.connection_id ?? 1}</span>
+              <span>{telemetry.connection_id ?? '—'}</span>
             </div>
           </div>
         </div>
@@ -259,7 +259,8 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
           {/* Nút Xác nhận sự cố (Operator ACK) */}
           <button
             type="button"
-            disabled={ackLoading}
+            disabled={ackLoading || readOnly}
+            title={readOnly ? 'Tài khoản chỉ xem không được xác nhận cảnh báo' : undefined}
             onClick={handleOperatorAck}
             className={`w-full py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-xs active:scale-95 cursor-pointer ${
               ackSuccess
@@ -287,6 +288,11 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
 
       {/* 3. BẢNG ĐIỀU KHIỂN 3 THIẾT BỊ CHẤP HÀNH (CỬA, QUẠT, ĐÈN LED1) */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex flex-col gap-4">
+        {readOnly && (
+          <div role="note" className="text-[11px] rounded-lg px-2.5 py-1.5 bg-slate-100 border border-slate-300 text-slate-700">
+            Tài khoản chỉ xem: các nút điều khiển đã bị khóa.
+          </div>
+        )}
         <div className="flex items-center justify-between border-b border-slate-100 pb-2">
           <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">
             Điều Khiển Thiết Bị (Actuators)
@@ -331,7 +337,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
           <div className="grid grid-cols-3 gap-1.5 mt-1">
             <button
               type="button"
-              disabled={loadingDevice === 'door_auto'}
+              disabled={readOnly || loadingDevice === 'door_auto'}
               onClick={() => handleCommand('door', 'auto')}
               className={`py-1.5 text-xs font-semibold rounded-lg transition-all border cursor-pointer ${
                 isDoorAuto
@@ -344,7 +350,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
 
             <button
               type="button"
-              disabled={loadingDevice === 'door_open'}
+              disabled={readOnly || loadingDevice === 'door_open'}
               onClick={() => handleCommand('door', 'open')}
               className={`py-1.5 text-xs font-semibold rounded-lg transition-all border cursor-pointer ${
                 isDoorOpen && !isDoorAuto
@@ -357,7 +363,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
 
             <button
               type="button"
-              disabled={isDoorLocked || loadingDevice === 'door_close'}
+              disabled={readOnly || isDoorLocked || loadingDevice === 'door_close'}
               onClick={() => handleCommand('door', 'close')}
               className={`py-1.5 text-xs font-semibold rounded-lg transition-all border flex items-center justify-center gap-1 ${
                 isDoorLocked
@@ -409,7 +415,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
           <div className="grid grid-cols-3 gap-1.5 mt-1">
             <button
               type="button"
-              disabled={loadingDevice === 'fan_auto'}
+              disabled={readOnly || loadingDevice === 'fan_auto'}
               onClick={() => handleCommand('fan', 'auto')}
               className={`py-1.5 text-xs font-semibold rounded-lg transition-all border cursor-pointer ${
                 isFanAuto
@@ -422,7 +428,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
 
             <button
               type="button"
-              disabled={loadingDevice === 'fan_on'}
+              disabled={readOnly || loadingDevice === 'fan_on'}
               onClick={() => handleCommand('fan', 'on')}
               className={`py-1.5 text-xs font-semibold rounded-lg transition-all border cursor-pointer ${
                 isFanOn && !isFanAuto
@@ -435,7 +441,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
 
             <button
               type="button"
-              disabled={isFanLockedOn || loadingDevice === 'fan_off'}
+              disabled={readOnly || isFanLockedOn || loadingDevice === 'fan_off'}
               onClick={() => handleCommand('fan', 'off')}
               className={`py-1.5 text-xs font-semibold rounded-lg transition-all border flex items-center justify-center gap-1 ${
                 isFanLockedOn
@@ -479,7 +485,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
           <div className="grid grid-cols-3 gap-1.5 mt-1">
             <button
               type="button"
-              disabled={loadingDevice === 'led1_auto'}
+              disabled={readOnly || loadingDevice === 'led1_auto'}
               onClick={() => handleCommand('led1', 'auto')}
               className={`py-1.5 text-xs font-semibold rounded-lg transition-all border cursor-pointer ${
                 isLed1Auto
@@ -492,7 +498,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
 
             <button
               type="button"
-              disabled={loadingDevice === 'led1_on'}
+              disabled={readOnly || loadingDevice === 'led1_on'}
               onClick={() => handleCommand('led1', 'on')}
               className={`py-1.5 text-xs font-semibold rounded-lg transition-all border cursor-pointer ${
                 isLed1On && !isLed1Auto
@@ -505,7 +511,7 @@ export const ControlDashboard: React.FC<ControlDashboardProps> = ({
 
             <button
               type="button"
-              disabled={loadingDevice === 'led1_off'}
+              disabled={readOnly || loadingDevice === 'led1_off'}
               onClick={() => handleCommand('led1', 'off')}
               className={`py-1.5 text-xs font-semibold rounded-lg transition-all border cursor-pointer ${
                 !isLed1On && !isLed1Auto

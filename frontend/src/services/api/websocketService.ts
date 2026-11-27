@@ -1,4 +1,8 @@
 import { WsMessage } from '../../types/api';
+import { authService } from './authService';
+
+/** Backend đóng WebSocket bằng mã này khi token thiếu/sai/hết hạn. */
+export const WS_UNAUTHORIZED = 4401;
 
 type MessageHandler = (msg: WsMessage) => void;
 type StatusHandler = (connected: boolean) => void;
@@ -18,6 +22,10 @@ class WebSocketService {
     if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
       return;
     }
+
+    // Chưa đăng nhập: không mở WebSocket (backend sẽ từ chối)
+    const token = authService.getToken();
+    if (!token) return;
 
     this.shouldReconnect = true;
     let wsUrl = url;
@@ -39,6 +47,8 @@ class WebSocketService {
       this.ws = new WebSocket(finalUrl);
 
       this.ws.onopen = () => {
+        // Tin đầu tiên phải là token (không đặt token trong URL để khỏi lộ qua log)
+        this.ws?.send(JSON.stringify({ kind: 'auth', token: authService.getToken() ?? '' }));
         this.isConnected = true;
         this.notifyStatus(true);
         if (this.reconnectTimer) {
@@ -56,10 +66,16 @@ class WebSocketService {
         }
       };
 
-      this.ws.onclose = () => {
+      this.ws.onclose = (event) => {
         this.isConnected = false;
         this.notifyStatus(false);
         this.ws = null;
+        if (event?.code === WS_UNAUTHORIZED) {
+          // Token hết hạn hoặc bị thu hồi: không thử lại, quay về màn hình đăng nhập
+          this.shouldReconnect = false;
+          authService.logout('expired');
+          return;
+        }
         this.scheduleReconnect(url);
       };
 

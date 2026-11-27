@@ -111,15 +111,14 @@ export const HistorySection: React.FC<HistorySectionProps> = ({ telemetry }) => 
 
   const metricLabel = HISTORY_METRICS.find((m) => m.id === metric)!.label;
 
-  const handleExport = () => {
+  const handleExport = async () => {
     if (connected && timeWindow) {
-      // Tải trực tiếp từ database qua backend: file CSV (ts,value) của đại lượng đang chọn
-      const link = document.createElement('a');
-      link.href = httpClient.getHistoryCsvUrl(metric, timeWindow.fromSec, timeWindow.toSec);
-      link.download = `${metric}.csv`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      // Tải trực tiếp từ database qua backend (kèm token đăng nhập): file CSV (ts,value)
+      try {
+        await httpClient.downloadHistoryCsv(metric, timeWindow.fromSec, timeWindow.toSec);
+      } catch (err: any) {
+        window.alert(err?.message || 'Không tải được CSV');
+      }
       return;
     }
     // Chưa có backend (chế độ mô phỏng): xuất từ dữ liệu đang hiển thị trên biểu đồ

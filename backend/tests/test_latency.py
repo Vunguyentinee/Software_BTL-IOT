@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.api import create_app
 from app.service import percentile
-from tests.conftest import EXAMPLE
+from tests.conftest import authed_client, EXAMPLE
 
 
 def test_percentile_nearest_rank():
@@ -61,7 +61,7 @@ def test_timeout_command_not_counted_as_latency(online_service, clock):
 
 @pytest.fixture
 def client(online_service):
-    return TestClient(create_app(online_service))
+    return authed_client(online_service, "viewer")
 
 
 def test_latency_endpoint(client):
@@ -125,7 +125,7 @@ class _BrokenStorage:
 
 def test_history_reports_503_when_database_down(online_service):
     online_service.storage = _BrokenStorage()
-    c = TestClient(create_app(online_service))
+    c = authed_client(online_service, "viewer")
     for url in ("/api/history?metric=temperature_c", "/api/history/stats?metric=temperature_c",
                 "/api/history/reliability", "/api/commands", "/api/events"):
         r = c.get(url)

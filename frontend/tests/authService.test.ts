@@ -1,132 +1,156 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { AuthService, authService } from '../src/services/api/authService';
+import { AuthService, StorageLike, authService } from '../src/services/api/authService';
 import { httpClient } from '../src/services/api/httpClient';
 
-const jsonRes = (status: number, body: unknown) =>
-  ({ ok: status >= 200 && status < 300, status, statusText: 'x', json: async () => body }) as Response;
+const jsonRes = (status: number, body: unknown, headers: Record<string, string> = {}) =>
+  ({
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: 'x',
+    headers: { get: (k: string) => headers[k] ?? null },
+    json: async () => body,
+  }) as unknown as Response;
 
-const loginOk = (token: string, expiresIn = 3600) =>
-  jsonRes(200, { access_token: token, token_type: 'bearer', expires_in: expiresIn, role: 'operator' });
+const loginOk = (token: string, role = 'operator', expiresIn = 3600) =>
+  jsonRes(200, { access_token: token, token_type: 'bearer', expires_in: expiresIn, role });
 
-const CREDS = { username: 'ui', password: 'secret-pass' };
+class MemStorage implements StorageLike {
+  data = new Map<string, string>();
+  getItem(k: string) {
+    return this.data.has(k) ? this.data.get(k)! : null;
+  }
+  setItem(k: string, v: string) {
+    this.data.set(k, v);
+  }
+  removeItem(k: string) {
+    this.data.delete(k);
+  }
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
-  authService.invalidate();
-  delete (globalThis as any).__APP_CONFIG__;
+  authService.logout();
 });
 
-describe('AuthService', () => {
-  it('không có tài khoản được cấu hình thì không đăng nhập và trả null', async () => {
+describe('AuthService (đăng nhập thủ công, không tự đăng nhập)', () => {
+  it('chưa đăng nhập thì không có token và không tự gọi /login', () => {
     const spy = vi.spyOn(global, 'fetch');
-    const svc = new AuthService(() => ({}));
-    expect(await svc.getToken()).toBeNull();
+    const svc = new AuthService(new MemStorage());
+    expect(svc.getSession()).toBeNull();
+    expect(svc.getToken()).toBeNull();
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it('đăng nhập một lần và dùng lại token', async () => {
-    const spy = vi.spyOn(global, 'fetch').mockResolvedValue(loginOk('tok-1'));
-    const svc = new AuthService(() => CREDS);
-    expect(await svc.getToken()).toBe('tok-1');
-    expect(await svc.getToken()).toBe('tok-1');
-    expect(spy).toHaveBeenCalledTimes(1);
+  it('đăng nhập gửi đúng tài khoản người dùng nhập và lưu phiên', async () => {
+    const spy = vi.spyOn(global, 'fetch').mockResolvedValue(loginOk('tok-1', 'viewer'));
+    const store = new MemStorage();
+    const svc = new AuthService(store, () => 1_000_000);
+    const s = await svc.login('vu', 'mat-khau-123');
+    expect(s).toMatchObject({ username: 'vu', role: 'viewer', token: 'tok-1', expiresAt: 1_000_000 + 3_600_000 });
     const [url, init] = spy.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/api/auth/login');
-    expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body as string)).toEqual({ username: 'ui', password: 'secret-pass' });
+    expect(JSON.parse(init.body as string)).toEqual({ username: 'vu', password: 'mat-khau-123' });
+    // phiên lưu trong sessionStorage KHÔNG chứa mật khẩu
+    expect(store.getItem('btl_session')).not.toContain('mat-khau-123');
   });
 
-  it('nhiều lời gọi đồng thời chỉ đăng nhập một lần', async () => {
-    const spy = vi.spyOn(global, 'fetch').mockResolvedValue(loginOk('tok-1'));
-    const svc = new AuthService(() => CREDS);
-    const tokens = await Promise.all([svc.getToken(), svc.getToken(), svc.getToken()]);
-    expect(tokens).toEqual(['tok-1', 'tok-1', 'tok-1']);
-    expect(spy).toHaveBeenCalledTimes(1);
-  });
-
-  it('tự đăng nhập lại khi token sắp hết hạn (còn dưới 60 giây)', async () => {
+  it('khôi phục phiên sau khi tải lại trang (cùng tab), bỏ phiên đã hết hạn', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(loginOk('tok-1'));
+    const store = new MemStorage();
     let now = 1_000_000;
-    const spy = vi.spyOn(global, 'fetch')
-      .mockResolvedValueOnce(loginOk('tok-1', 3600))
-      .mockResolvedValueOnce(loginOk('tok-2', 3600));
-    const svc = new AuthService(() => CREDS, () => now);
-    expect(await svc.getToken()).toBe('tok-1');
-    now += (3600 - 30) * 1000;
-    expect(await svc.getToken()).toBe('tok-2');
-    expect(spy).toHaveBeenCalledTimes(2);
+    await new AuthService(store, () => now).login('vu', 'mat-khau-123');
+    expect(new AuthService(store, () => now).getToken()).toBe('tok-1');
+    now += 3_600_000 + 1;
+    expect(new AuthService(store, () => now).getToken()).toBeNull();
   });
 
-  it('đăng nhập sai ném lỗi, không giữ token hỏng', async () => {
+  it('dữ liệu phiên hỏng / vai trò lạ thì coi như chưa đăng nhập', () => {
+    const store = new MemStorage();
+    store.setItem('btl_session', '{rac');
+    expect(new AuthService(store).getSession()).toBeNull();
+    store.setItem('btl_session', JSON.stringify({ username: 'x', role: 'root', token: 't', expiresAt: 9e15 }));
+    expect(new AuthService(store).getSession()).toBeNull();
+  });
+
+  it('sai mật khẩu -> thông báo dễ hiểu, không tạo phiên', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(jsonRes(401, { detail: 'invalid_credentials' }));
-    const svc = new AuthService(() => CREDS);
-    await expect(svc.getToken()).rejects.toThrow('invalid_credentials');
-    vi.spyOn(global, 'fetch').mockResolvedValue(loginOk('tok-ok'));
-    expect(await svc.getToken()).toBe('tok-ok');
+    const svc = new AuthService(new MemStorage());
+    await expect(svc.login('vu', 'sai-mat-khau')).rejects.toThrow('Sai tên đăng nhập hoặc mật khẩu');
+    expect(svc.getSession()).toBeNull();
   });
 
-  it('đọc tài khoản từ window.__APP_CONFIG__ do container cấp lúc chạy', async () => {
-    (globalThis as any).__APP_CONFIG__ = { uiUsername: 'ui', uiPassword: 'from-config' };
-    const spy = vi.spyOn(global, 'fetch').mockResolvedValue(loginOk('tok-cfg'));
-    expect(await authService.getToken()).toBe('tok-cfg');
-    expect(JSON.parse((spy.mock.calls[0][1] as RequestInit).body as string).password).toBe('from-config');
+  it('bị khóa do sai nhiều lần -> báo số giây chờ', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(jsonRes(429, { detail: 'too_many_login_attempts' }, { 'Retry-After': '42' }));
+    await expect(new AuthService(new MemStorage()).login('vu', 'x'.repeat(10))).rejects.toThrow('42 giây');
+  });
+
+  it('không kết nối được backend -> báo rõ', async () => {
+    vi.spyOn(global, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'));
+    await expect(new AuthService(new MemStorage()).login('vu', 'x'.repeat(10))).rejects.toThrow('Không kết nối được');
+  });
+
+  it('đăng xuất xóa phiên và báo cho listener; hết hạn thì ghi lý do', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(loginOk('tok-1'));
+    const store = new MemStorage();
+    const svc = new AuthService(store);
+    const seen: Array<unknown> = [];
+    svc.subscribe((s) => seen.push(s));
+    await svc.login('vu', 'mat-khau-123');
+    svc.logout('expired');
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toBeNull();
+    expect(store.getItem('btl_session')).toBeNull();
+    expect(svc.consumeLogoutReason()).toBe('expired');
+    expect(svc.consumeLogoutReason()).toBeNull();
+  });
+
+  it('hasRole theo thứ bậc viewer < operator < admin', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(loginOk('tok', 'operator'));
+    const svc = new AuthService(new MemStorage());
+    expect(svc.hasRole('viewer')).toBe(false);
+    await svc.login('op', 'mat-khau-123');
+    expect(svc.hasRole('viewer')).toBe(true);
+    expect(svc.hasRole('operator')).toBe(true);
+    expect(svc.hasRole('admin')).toBe(false);
   });
 });
 
 describe('httpClient + JWT', () => {
-  it('GET không gắn token và không đăng nhập', async () => {
-    (globalThis as any).__APP_CONFIG__ = { uiUsername: 'ui', uiPassword: 'pw-123456' };
+  const loginAs = async (role = 'operator') => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(loginOk('tok-A', role));
+    await authService.login('vu', 'mat-khau-123');
+    vi.restoreAllMocks(); // chỉ đếm các lời gọi sau khi đăng nhập
+  };
+
+  it('GET (xem dữ liệu) cũng gắn Bearer', async () => {
+    await loginAs('viewer');
     const spy = vi.spyOn(global, 'fetch').mockResolvedValue(jsonRes(200, { online: true }));
     await httpClient.getState();
-    expect(spy).toHaveBeenCalledTimes(1);
     const init = spy.mock.calls[0][1] as RequestInit;
-    expect((init.headers as Record<string, string>)?.Authorization).toBeUndefined();
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok-A');
   });
 
-  it('POST điều khiển tự đăng nhập và gắn Bearer', async () => {
-    (globalThis as any).__APP_CONFIG__ = { uiUsername: 'ui', uiPassword: 'pw-123456' };
-    const spy = vi.spyOn(global, 'fetch').mockImplementation(async (url: any) =>
-      String(url).endsWith('/api/auth/login') ? loginOk('tok-A') : jsonRes(200, { cmd_id: 'c1', status: 'pending' }));
+  it('POST điều khiển gắn Bearer, không tự đăng nhập', async () => {
+    await loginAs();
+    const spy = vi.spyOn(global, 'fetch').mockResolvedValue(jsonRes(200, { cmd_id: 'c1', status: 'pending' }));
     await httpClient.sendCommand('fan', 'on');
-    const cmdCall = spy.mock.calls.find((c) => String(c[0]).includes('/command'))!;
-    expect(((cmdCall[1] as RequestInit).headers as Record<string, string>).Authorization).toBe('Bearer tok-A');
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(((spy.mock.calls[0][1] as RequestInit).headers as Record<string, string>).Authorization).toBe('Bearer tok-A');
   });
 
-  it('401 thì đăng nhập lại và thử lại đúng một lần', async () => {
-    (globalThis as any).__APP_CONFIG__ = { uiUsername: 'ui', uiPassword: 'pw-123456' };
-    let logins = 0;
-    let commands = 0;
-    vi.spyOn(global, 'fetch').mockImplementation(async (url: any) => {
-      if (String(url).endsWith('/api/auth/login')) return loginOk(`tok-${++logins}`);
-      commands += 1;
-      return commands === 1 ? jsonRes(401, { detail: 'not_authenticated' }) : jsonRes(200, { cmd_id: 'c1', status: 'pending' });
-    });
-    const res = await httpClient.sendCommand('fan', 'on');
-    expect(res.cmd_id).toBe('c1');
-    expect(logins).toBe(2);
-    expect(commands).toBe(2);
-  });
-
-  it('401 lặp lại thì báo lỗi, không lặp vô hạn', async () => {
-    (globalThis as any).__APP_CONFIG__ = { uiUsername: 'ui', uiPassword: 'pw-123456' };
-    let commands = 0;
-    vi.spyOn(global, 'fetch').mockImplementation(async (url: any) => {
-      if (String(url).endsWith('/api/auth/login')) return loginOk('tok');
-      commands += 1;
-      return jsonRes(401, { detail: 'not_authenticated' });
-    });
+  it('401 -> đăng xuất (về trang đăng nhập), không thử lại', async () => {
+    await loginAs();
+    const spy = vi.spyOn(global, 'fetch').mockResolvedValue(jsonRes(401, { detail: 'not_authenticated' }));
     await expect(httpClient.sendCommand('fan', 'on')).rejects.toThrow('not_authenticated');
-    expect(commands).toBe(2);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(authService.getSession()).toBeNull();
   });
 
-  it('403 (thiếu quyền) được báo nguyên văn, không thử lại', async () => {
-    (globalThis as any).__APP_CONFIG__ = { uiUsername: 'ui', uiPassword: 'pw-123456' };
-    let calls = 0;
-    vi.spyOn(global, 'fetch').mockImplementation(async (url: any) => {
-      if (String(url).endsWith('/api/auth/login')) return loginOk('tok');
-      calls += 1;
-      return jsonRes(403, { detail: 'forbidden' });
-    });
+  it('403 (thiếu quyền) báo rõ, vẫn giữ phiên, không thử lại', async () => {
+    await loginAs('viewer');
+    const spy = vi.spyOn(global, 'fetch').mockResolvedValue(jsonRes(403, { detail: 'forbidden' }));
     await expect(httpClient.putConfig({} as any)).rejects.toThrow('forbidden');
-    expect(calls).toBe(1);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(authService.getSession()).not.toBeNull();
   });
 });

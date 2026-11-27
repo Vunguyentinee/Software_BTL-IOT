@@ -223,12 +223,26 @@ def test_manual_fan_commands_rejected_while_door_locked(sim, rec):
     assert last_ack(rec, "c-auto")["result"] == "ok"
 
 
-def test_fan_output_frozen_while_door_locked(sim):
-    sim.build_telemetry()
-    assert sim.fan_on is False
-    sim.set_scenario("smoke_danger")             # 32 °C: chưa đủ để bật quạt
-    sim.temperature = 38.0                        # nóng lên trong lúc khóa: đầu ra quạt giữ nguyên
+def test_smoke_alarm_forces_fan_on(sim):
+    # firmware Hoan_Thien: fanForcedOn = doorSafety.alarm() || heatAlarm
+    cmd(sim, "fan", "off")
     assert sim.build_telemetry()["fan_on"] is False
+    sim.set_scenario("smoke_danger")             # 32 °C: nhiệt chưa đủ bật quạt, nhưng cảnh báo khói ép quạt chạy
+    t = sim.build_telemetry()
+    assert t["smoke_alarm"] is True and t["fan_on"] is True
+
+
+def test_fan_output_frozen_during_hold_after_smoke_clears(sim, clock):
+    # sau khi hết khói, cửa còn khóa 60 s: quạt giữ nguyên đầu ra (đang chạy), không theo nhiệt
+    sim.set_scenario("smoke_danger")
+    sim.build_telemetry()
+    sim.smoke_raw = 400
+    sim.temperature = 20.0
+    t = sim.build_telemetry()
+    assert t["smoke_alarm"] is False and t["door_safety_lock"] is True and t["fan_on"] is True
+    clock.advance(61.0)
+    sim.build_telemetry()
+    assert sim.build_telemetry()["fan_on"] is False   # hết khóa: quạt về AUTO theo nhiệt
 
 
 # ---- cửa: lệnh xung đột ------------------------------------------------------------------

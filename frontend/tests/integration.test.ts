@@ -12,6 +12,7 @@ import { commandService } from '../src/services/commandService';
 import { backendService } from '../src/services/backendService';
 import { websocketService } from '../src/services/api/websocketService';
 import { historyService } from '../src/services/historyData';
+import { authService } from '../src/services/api/authService';
 
 describe('Kiểm thử Tích hợp Backend ↔ Frontend (Integration Tests)', () => {
   beforeEach(() => {
@@ -205,6 +206,23 @@ describe('Kiểm thử Tích hợp Backend ↔ Frontend (Integration Tests)', ()
   });
 
   describe('3. Kiểm thử Tầng Command Service & Backend Điều Khiển', () => {
+    // Các ca dưới đây giả định người dùng đã đăng nhập với quyền điều khiển (operator)
+    beforeEach(() => {
+      vi.spyOn(authService, 'hasRole').mockReturnValue(true);
+    });
+
+    it('Tài khoản chỉ xem (viewer) bị từ chối ngay, không gửi gì xuống backend', async () => {
+      vi.mocked(authService.hasRole).mockReturnValue(false);
+      vi.spyOn(backendService, 'getStatus').mockReturnValue({
+        isServerConnected: true,
+        isESP32Online: true,
+        lastSeen: Date.now(),
+      });
+      const fetchSpy = vi.spyOn(global, 'fetch');
+      await expect(commandService.sendCommand('fan', true)).rejects.toThrow(/chỉ xem/i);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
     it('Từ chối gửi lệnh khi hệ thống đang ở chế độ TỰ ĐỘNG (Auto Mode)', async () => {
       vi.spyOn(backendService, 'getStatus').mockReturnValue({
         isServerConnected: true,

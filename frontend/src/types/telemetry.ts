@@ -60,9 +60,27 @@ export interface ESP32Telemetry {
   connection_id?: number | null;// Phiên kết nối MQTT hiện tại (tăng mỗi lần reconnect)
   device_id?: string | null;    // Tên định danh thiết bị (esp32-home)
   gas_sensor_fault?: boolean;   // Lỗi cảm biến gas kẹt biên ADC
-  active_alarms?: Array<{ id?: string; type: string; reason?: string; timestamp?: number; severity?: 'warning' | 'critical' }>;
+  active_alarms?: ActiveAlarm[]; // Cảnh báo hiện hành do firmware gửi (event_id dùng để Operator ACK)
   mqtt_connected?: boolean;     // Trạng thái kết nối MQTT
   modes?: Record<string, 'auto' | 'manual'>; // Chế độ từng thiết bị (led1, fan, door)
+}
+
+/** Một cảnh báo đang hiệu lực theo hợp đồng API_MQTT_v2 (telemetry.active_alarms[]). */
+export interface ActiveAlarm {
+  alarm?: string;
+  event_id?: string;
+  started_ms?: number;
+  backend_ack?: boolean;
+  backend_overdue?: boolean;
+  operator_ack?: boolean;
+  operator_overdue?: boolean;
+}
+
+/** Các event_id đang chờ người vận hành xác nhận. */
+export function pendingAckEventIds(alarms: ActiveAlarm[] | undefined | null): string[] {
+  return (alarms ?? [])
+    .filter((a) => typeof a?.event_id === 'string' && a.event_id.length > 0 && !a.operator_ack)
+    .map((a) => a.event_id as string);
 }
 
 export interface SystemStatus {

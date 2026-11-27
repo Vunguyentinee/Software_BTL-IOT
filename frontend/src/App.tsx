@@ -14,16 +14,26 @@ import { SmartHouseScene } from './components/SmartHouseScene';
 import { ControlDashboard } from './components/ControlDashboard';
 import { backendService, BackendConnectionStatus } from './services/backendService';
 import { mockService } from './services/mockData';
-import { mqttService, MqttConnectionStatus } from './services/mqttService';
-import { ESP32Telemetry, SystemMode, ScenarioType, DeviceThresholds } from './types/telemetry';
+import { ESP32Telemetry, SystemMode, ScenarioType, DeviceThresholds, pendingAckEventIds } from './types/telemetry';
 import { BackendSim } from './types/api';
 import { CheckCircle2, AlertCircle } from 'lucide-react';
 import { httpClient } from './services/api/httpClient';
+import { authService, Session } from './services/api/authService';
 
 type AppTab = '3d' | 'dashboard';
 
-export const App: React.FC = () => {
-  const [telemetry, setTelemetry] = useState<ESP32Telemetry>(mockService.getCurrentTelemetry());
+interface AppProps {
+  session: Session;
+}
+
+const READ_ONLY_MSG = 'Tài khoản chỉ xem không có quyền điều khiển thiết bị.';
+
+export const App: React.FC<AppProps> = ({ session }) => {
+  // Quyền trên giao diện chỉ để dễ dùng; backend vẫn kiểm tra lại quyền ở mọi yêu cầu
+  const canControl = session.role === 'operator' || session.role === 'admin';
+  const canConfigure = session.role === 'admin';
+
+  const [telemetry, setTelemetry] = useState<ESP32Telemetry>(backendService.getCurrentTelemetry());
   const [currentScenario, setCurrentScenario] = useState<ScenarioType>('normal');
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<AppTab>('3d');
@@ -36,11 +46,9 @@ export const App: React.FC = () => {
   const [showLabels, setShowLabels] = useState<boolean>(true);
   const [showPirCone, setShowPirCone] = useState<boolean>(false);
 
-  // Trạng thái Chế độ Giả lập (Mock Telemetry Mode)
-  const [isMockMode, setIsMockMode] = useState<boolean>(true);
-
-  // Trạng thái kết nối MQTT
-  const [mqttStatus, setMqttStatus] = useState<MqttConnectionStatus>('disconnected');
+  // Chế độ Giả lập cục bộ (dữ liệu giả trên trình duyệt). Mặc định TẮT để không nhầm với số liệu thật;
+  // người dùng tự bật bằng nút "MÔ PHỎNG" khi muốn thử giao diện mà không có ESP32.
+  const [isMockMode, setIsMockMode] = useState<boolean>(false);
 
   useEffect(() => backendService.subscribeSim(setSim), []);
 
@@ -53,7 +61,8 @@ export const App: React.FC = () => {
     }
   }, [isMockMode]);
 
-  // 1. Khởi tạo BackendService & MQTT Service
+  // 1. Khởi tạo BackendService. Trình duyệt KHÔNG nối thẳng MQTT: mọi dữ liệu và lệnh đi qua backend
+  // (có đăng nhập, phân quyền, theo dõi ACK). Broker chỉ cho ESP32 và backend kết nối.
   useEffect(() => {
     backendService.init();
 
@@ -65,29 +74,10 @@ export const App: React.FC = () => {
       }
     });
 
-    // Thử kết nối MQTT Service
-    mqttService.connect();
-    const unsubscribeMqttStatus = mqttService.subscribeStatus((status) => {
-      setMqttStatus(status);
-    });
-
-    const unsubscribeMqttTelemetry = mqttService.subscribeTelemetry((mqttTelem) => {
-      if (!isMockMode) {
-        setTelemetry((prev) => ({
-          ...prev,
-          ...mqttTelem,
-          timestamp: Date.now(),
-        }));
-      }
-    });
-
     return () => {
       unsubscribeBackendStatus();
-      unsubscribeMqttStatus();
-      unsubscribeMqttTelemetry();
-      mqttService.disconnect();
     };
-  }, [isMockMode]);
+  }, []);
 
   // 2. Đăng ký luồng Telemetry:
   // - Nếu ở chế độ Mock hoặc backend không có ESP32 online: mockService là nguồn chính
@@ -141,10 +131,7 @@ export const App: React.FC = () => {
     mockService.setScenario(scenario);
     setTelemetry({ ...mockService.getCurrentTelemetry() });
 
-    if (backendStatus.isServerConnected) {
-      backendService.setSimScenario(scenario).catch(() => {});
-    }
-    showToast(`Đã kích hoạt kịch bản giả lập: "${scenario}"`);
+    showToast(`Đã kích hoạt kịch bản giả lập cục bộ: "${scenario}"`);
   };
 
   // Điều khiển thiết bị từ ControlDashboard & ControlPanel
@@ -152,6 +139,10 @@ export const App: React.FC = () => {
     device: 'door' | 'fan' | 'led1',
     action: 'auto' | 'on' | 'off' | 'open' | 'close'
   ) => {
+    if (!canControl) {
+      showToast(READ_ONLY_MSG, true);
+      return;
+    }
     // 1. Kiểm tra ràng buộc khóa an toàn (Safety Interlocks)
     if (device === 'door' && action === 'close') {
       if (telemetry.door_safety_lock || telemetry.smoke_alarm || telemetry.gas_alarm) {
@@ -195,7 +186,7 @@ export const App: React.FC = () => {
         return next;
       });
 
-      // Gửi lệnh xuống phần cứng qua Backend FastAPI hoặc MQTT
+      // Gửi lệnh xuống phần cứng CHỈ qua Backend (xác thực + cmd_id + ACK)
       if (backendStatus.isServerConnected) {
         try {
           await httpClient.sendCommand(device, action);
@@ -203,29 +194,23 @@ export const App: React.FC = () => {
         } catch (err: any) {
           showToast(err?.message || `Lỗi gửi lệnh tới ${device}`, true);
         }
-      } else if (mqttStatus === 'connected') {
-        try {
-          const ok = await mqttService.publishCommand(device, action);
-          if (ok) {
-            showToast(`Đã publish lệnh ${action.toUpperCase()} tới topic MQTT!`);
-          } else {
-            showToast(`Không thể gửi lệnh MQTT tới ${device}`, true);
-          }
-        } catch (err: any) {
-          showToast(`Lỗi publish MQTT tới ${device}`, true);
-        }
       } else {
-        showToast(`Không có kết nối phần cứng thật (Backend/MQTT Offline)!`, true);
+        showToast('Mất kết nối backend, lệnh chưa được gửi!', true);
       }
     }
   };
 
   // Xác nhận sự cố (Operator ACK)
-  const handleAckAlarm = async () => {
+  const handleAckAlarm = async (): Promise<boolean> => {
+    if (!canControl) {
+      showToast('Tài khoản chỉ xem không được xác nhận cảnh báo.', true);
+      return false;
+    }
     try {
-      if (backendStatus.isServerConnected) {
-        const res = await backendService.acknowledgeAlarm();
-        showToast(res.message);
+      if (!isMockMode) {
+        const ids = pendingAckEventIds(telemetry.active_alarms);
+        const done = await backendService.acknowledgeAlarms(ids);
+        showToast(`Đã gửi xác nhận ${done.length} cảnh báo tới ESP32.`);
       } else {
         // Trong chế độ giả lập offline: Tắt các cờ báo động trên mock
         mockService.setDeviceState('door', 'auto');
@@ -243,12 +228,18 @@ export const App: React.FC = () => {
         }));
         showToast('Đã xác nhận sự cố (Operator ACK trên Giả lập)!');
       }
+      return true;
     } catch (err: any) {
       showToast(err?.message || 'Không thể xác nhận sự cố', true);
+      return false;
     }
   };
 
   const handleModeChange = async (newMode: SystemMode) => {
+    if (!canControl) {
+      showToast('Tài khoản chỉ xem không được đổi chế độ vận hành.', true);
+      return;
+    }
     try {
       mockService.setSystemMode(newMode);
       setTelemetry({ ...mockService.getCurrentTelemetry() });
@@ -265,6 +256,10 @@ export const App: React.FC = () => {
   };
 
   const handleSaveThresholds = async (newThresholds: DeviceThresholds) => {
+    if (!canConfigure) {
+      showToast('Chỉ admin được sửa ngưỡng.', true);
+      throw new Error('forbidden');
+    }
     try {
       mockService.updateThresholds(newThresholds);
       setTelemetry({ ...mockService.getCurrentTelemetry() });
@@ -283,11 +278,7 @@ export const App: React.FC = () => {
 
   const isOnline = isMockMode
     ? true
-    : backendStatus.isServerConnected
-    ? backendStatus.isESP32Online
-    : mqttStatus === 'connected'
-    ? true
-    : currentScenario !== 'esp32_offline';
+    : backendStatus.isServerConnected && backendStatus.isESP32Online;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans antialiased selection:bg-blue-500 selection:text-white">
@@ -303,14 +294,19 @@ export const App: React.FC = () => {
         onScenarioChange={handleScenarioChange}
         sim={sim}
         onSimScenarioChange={async (scId) => {
-          handleScenarioChange(scId as ScenarioType);
+          // Kịch bản của simulator phía backend: dữ liệu vẫn đi qua backend, không bật giả lập cục bộ
           try {
             await backendService.setSimScenario(scId);
-          } catch {
-            // ignore
+            showToast(`Simulator backend: kịch bản "${scId}"`);
+          } catch (err: any) {
+            showToast(err?.message || 'Không đổi được kịch bản simulator', true);
           }
         }}
         onOpenConfig={() => setIsConfigOpen(true)}
+        user={{ username: session.username, role: session.role }}
+        onLogout={() => authService.logout('manual')}
+        canControl={canControl}
+        canConfigure={canConfigure}
       />
 
       {/* TOAST SYSTEM NOTIFICATION */}
@@ -392,13 +388,13 @@ export const App: React.FC = () => {
             {/* Cột Phải: Bảng Điều Khiển & Giám Sát HUD Sidebar */}
             <ControlDashboard
               telemetry={telemetry}
-              mqttStatus={mqttStatus}
               isMockMode={isMockMode}
               onToggleMockMode={(val) => setIsMockMode(val)}
               onDeviceCommand={handleDeviceCommand}
               onAckAlarm={handleAckAlarm}
               onSelectMockScenario={(scId) => handleScenarioChange(scId as ScenarioType)}
               isBackendConnected={backendStatus.isServerConnected}
+              readOnly={!canControl}
             />
           </div>
         ) : (
@@ -407,7 +403,8 @@ export const App: React.FC = () => {
             {/* Banner Cảnh báo */}
             <AlertBanner
               telemetry={telemetry}
-              onAckAlarm={() => showToast('Đã gửi xác nhận Operator ACK!')}
+              onAckAlarm={handleAckAlarm}
+              readOnly={!canControl}
             />
 
             {/* 4 Chỉ số môi trường */}
@@ -418,6 +415,7 @@ export const App: React.FC = () => {
               telemetry={telemetry}
               onSwitchToManual={() => handleModeChange('manual')}
               onSwitchToAuto={() => handleModeChange('auto')}
+              readOnly={!canControl}
             />
 
             {/* Biểu đồ lịch sử */}
@@ -438,6 +436,7 @@ export const App: React.FC = () => {
 
       {/* MODAL CẤU HÌNH NGƯỠNG */}
       <ThresholdModal
+        readOnly={!canConfigure}
         isOpen={isConfigOpen}
         onClose={() => setIsConfigOpen(false)}
         currentThresholds={telemetry.thresholds}

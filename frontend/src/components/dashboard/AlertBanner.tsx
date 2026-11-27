@@ -12,14 +12,15 @@ import {
   Check
 } from 'lucide-react';
 import { ESP32Telemetry } from '../../types/telemetry';
-import { backendService } from '../../services/backendService';
 
 interface AlertBannerProps {
   telemetry: ESP32Telemetry;
-  onAckAlarm?: () => void;
+  /** Gửi Operator ACK thật; trả về true khi backend đã nhận. */
+  onAckAlarm?: () => Promise<boolean>;
+  readOnly?: boolean;
 }
 
-export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry, onAckAlarm }) => {
+export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry, onAckAlarm, readOnly = false }) => {
   const { 
     heat_alarm, 
     smoke_alarm, 
@@ -43,12 +44,11 @@ export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry, onAckAlarm 
   const handleOperatorAck = async () => {
     setAcking(true);
     try {
-      await backendService.acknowledgeAlarm();
-      setAcked(true);
-      onAckAlarm?.();
-      setTimeout(() => setAcked(false), 8000);
-    } catch (e) {
-      console.error('Operator ack failed:', e);
+      // Kết quả (thành công / lỗi) do App báo bằng thông báo; chỉ hiện "đã xác nhận" khi thật sự thành công
+      if (onAckAlarm && (await onAckAlarm())) {
+        setAcked(true);
+        setTimeout(() => setAcked(false), 8000);
+      }
     } finally {
       setAcking(false);
     }
@@ -167,7 +167,7 @@ export const AlertBanner: React.FC<AlertBannerProps> = ({ telemetry, onAckAlarm 
           {!acked && (
             <button
               onClick={handleOperatorAck}
-              disabled={acking}
+              disabled={acking || readOnly || !onAckAlarm}
               className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white text-xs font-bold rounded-lg shadow transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               <CheckCircle2 className="w-4 h-4" />

@@ -6,8 +6,11 @@ import {
   Clock, 
   Server,
   RefreshCw,
-  Settings2
+  Settings2,
+  LogOut,
+  UserCircle2
 } from 'lucide-react';
+import { Role, ROLE_LABEL } from '../../services/api/authService';
 import { SystemMode, ScenarioType } from '../../types/telemetry';
 import { BackendSim } from '../../types/api';
 
@@ -24,6 +27,13 @@ interface StatusHeaderProps {
   /** ESP32 giả lập đang chạy qua backend: ô Kịch bản điều khiển nó thay vì mô phỏng trong trình duyệt */
   sim?: BackendSim;
   onSimScenarioChange?: (scenarioId: string) => void;
+  /** Người đang đăng nhập (hiện tên, vai trò, nút đăng xuất). */
+  user?: { username: string; role: Role };
+  onLogout?: () => void;
+  /** operator/admin: đổi chế độ, đổi kịch bản giả lập. */
+  canControl?: boolean;
+  /** admin: sửa ngưỡng. */
+  canConfigure?: boolean;
 }
 
 export const StatusHeader: React.FC<StatusHeaderProps> = ({
@@ -38,6 +48,10 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
   isServerConnected = false,
   sim,
   onSimScenarioChange,
+  user,
+  onLogout,
+  canControl = true,
+  canConfigure = true,
 }) => {
   // Chuyển đổi uptime_ms sang chuỗi dễ đọc
   const formatUptime = (ms: number): string => {
@@ -127,8 +141,9 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
             <div className="flex items-center p-1 bg-slate-100 rounded-xl border border-slate-200">
               <button
                 type="button"
+                disabled={!canControl}
                 onClick={() => onModeChange('auto')}
-                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
                   systemMode === 'auto'
                     ? 'bg-white text-blue-700 shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
@@ -139,8 +154,9 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
               </button>
               <button
                 type="button"
+                disabled={!canControl}
                 onClick={() => onModeChange('manual')}
-                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
                   systemMode === 'manual'
                     ? 'bg-white text-amber-700 shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
@@ -156,7 +172,7 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
               type="button"
               onClick={onOpenConfig}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200 text-xs font-semibold transition-all active:scale-95 shadow-xs cursor-pointer"
-              title="Cài đặt ngưỡng nhiệt độ & khói"
+              title={canConfigure ? 'Cài đặt ngưỡng nhiệt độ & khói' : 'Xem ngưỡng (chỉ admin được sửa)'}
             >
               <Settings2 className="w-3.5 h-3.5 text-amber-600" />
               <span className="hidden sm:inline">Cấu hình ngưỡng</span>
@@ -172,6 +188,7 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
               {sim?.active ? (
                 <select
                   value={sim.scenario ?? ''}
+                  disabled={!canControl}
                   onChange={(e) => onSimScenarioChange?.(e.target.value)}
                   className="bg-transparent text-xs text-blue-700 font-medium focus:outline-none cursor-pointer"
                 >
@@ -199,6 +216,28 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
               </select>
               )}
             </div>
+
+            {/* Người dùng đang đăng nhập */}
+            {user && (
+              <div className="flex items-center gap-1.5 bg-slate-50 pl-2.5 pr-1 py-1 rounded-lg border border-slate-200">
+                <UserCircle2 className="w-4 h-4 text-slate-500" />
+                <span className="text-xs font-semibold text-slate-800" title={`Vai trò: ${user.role}`}>
+                  {user.username}
+                </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-100 font-semibold">
+                  {ROLE_LABEL[user.role]}
+                </span>
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="ml-0.5 p-1 rounded-md text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                  title="Đăng xuất"
+                  aria-label="Đăng xuất"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
 
           </div>
 

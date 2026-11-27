@@ -81,8 +81,8 @@ Backend kiểm tra trước các ràng buộc an toàn trên telemetry mới nh�
 ## 5. Quy tắc an toàn (firmware)
 
 - **Cửa:** AUTO giữ mở 10 s sau lần cuối PIR HIGH. Khi gas/khói ≥ `smoke_high`: mở ngay, **kể cả chế độ thủ công**, từ chối đóng. Sau khi hết cảnh báo cửa vẫn giữ mở cho tới khi có **60 s mẫu thấp hợp lệ liên tục** (mẫu 1501–1999 hoặc cao thì đếm lại); khóa được lưu NVS và khôi phục sau reset. ADC kẹt biên 0/4095 trong 2 s → `gas_sensor_fault`, giữ cửa.
-- **Quạt:** ≥ 40 °C ép quạt chạy (kể cả thủ công), từ chối `fan off`; khi cửa bị khóa theo gas thì quạt giữ nguyên đầu ra và từ chối mọi lệnh tay.
-- **Mất mạng:** chế độ tay giữ 10 s rồi về AUTO tại chỗ; cảnh báo và khóa vẫn chạy.
+- **Quạt:** cảnh báo nhiệt (≥ `heat_alarm_on`) hoặc cảnh báo khói ép quạt chạy (kể cả thủ công); cảnh báo nhiệt thì từ chối `fan off`; khi cửa bị khóa theo gas thì từ chối mọi lệnh quạt tay, sau khi hết khói (còn giữ 60 s) quạt giữ nguyên đầu ra.
+- **Mất mạng:** chế độ tay giữ 30 s (`ConnectionPolicy::fallbackMs`, bản Hoan_Thien) rồi về AUTO tại chỗ; cảnh báo và khóa vẫn chạy.
 
 ## 6. Sự kiện và xác nhận cảnh báo
 
@@ -101,7 +101,7 @@ Backend chỉ chấp nhận xác nhận cho `event_id` đang có trong `active_a
 
 ## 7. Heartbeat backend
 
-Backend gửi `{"target_boot_id","target_connection_id"}` lên `backend/heartbeat` mỗi 2 s khi thiết bị online và có phiên. Chỉ có tác dụng khi firmware đặt `MONITOR_BACKEND_HEARTBEAT=true` (mặc định `false`): sau 8 s không có heartbeat hợp lệ firmware từ chối lệnh từ xa, sau 10 s chuyển AUTO tại chỗ.
+Backend gửi `{"target_boot_id","target_connection_id"}` lên `backend/heartbeat` mỗi 2 s khi thiết bị online và có phiên. Chỉ có tác dụng khi firmware đặt `MONITOR_BACKEND_HEARTBEAT=true` (mặc định `false`): sau 8 s không có heartbeat hợp lệ firmware từ chối lệnh từ xa, sau 30 s chuyển AUTO tại chỗ.
 
 ## 8. REST (bổ sung so với v1)
 

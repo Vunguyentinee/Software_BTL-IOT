@@ -33,7 +33,8 @@ docker compose ps                   # kiểm tra: backend, db, mosquitto, fronte
 ```
 
 Không có `.env` thì `docker compose` dừng ngay và báo thiếu biến: đây là chủ đích, hệ thống **không** chạy với mật khẩu mặc định.
-Tài khoản đăng nhập API: `admin` (mật khẩu là `ADMIN_PASSWORD` trong `.env`) có đủ quyền; giao diện web tự đăng nhập bằng tài khoản `ui` (vai trò `operator`).
+**Đăng nhập:** web và API đều bắt đăng nhập (không có tự đăng ký). Tài khoản có sẵn: `admin` (mật khẩu `ADMIN_PASSWORD` trong `.env`, đủ quyền) và `ui` (mật khẩu `UI_PASSWORD`, quyền điều khiển).
+Cấp tài khoản riêng cho từng thành viên: `powershell -ExecutionPolicy Bypass -File dockerdd-user.ps1 -Name <tên> -Role viewer|operator|admin` rồi `docker compose up -d backend`.
 Chi tiết bảo mật (JWT, vai trò, tài khoản MQTT, ACL) xem [backend/docs/SECURITY.md](backend/docs/SECURITY.md).
 
 Kiểm tra: mở **http://localhost:3000** (giao diện). API và tài liệu API: http://localhost:8000/docs.

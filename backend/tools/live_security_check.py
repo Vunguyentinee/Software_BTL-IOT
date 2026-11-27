@@ -30,7 +30,12 @@ def check(name, ok, detail=""):
     print(("PASS" if ok else "FAIL"), "-", name, detail)
 
 
-def http(method, path, body=None, token=None):
+READ = {"token": None}   # GET không truyền token thì dùng token này (sau khi đăng nhập)
+
+
+def http(method, path, body=None, token=None, anonymous=False):
+    if not anonymous:
+        token = token or (READ["token"] if method == "GET" else None)
     req = urllib.request.Request(API + path, method=method,
                                  data=json.dumps(body).encode() if body is not None else None)
     req.add_header("Content-Type", "application/json")
@@ -158,6 +163,7 @@ check("API-04 đăng nhập sai -> 401", code == 401, f"code={code}")
 code, body = http("POST", "/api/auth/login", {"username": "ui", "password": ENV["UI_PASSWORD"]})
 check("API-05 đăng nhập ui (operator) -> 200 + JWT", code == 200 and body.get("role") == "operator", f"code={code}")
 op = body["access_token"]
+READ["token"] = op
 code, body = http("POST", "/api/auth/login", {"username": "admin", "password": ENV["ADMIN_PASSWORD"]})
 adm = body["access_token"]
 code, _ = http("PUT", "/api/config", {"fan_on": 36, "fan_off": 33}, token=op)
@@ -188,6 +194,51 @@ for path in ("/api/history/reliability", "/api/history/commands/stats",
              "/api/history/connections", "/api/history/errors"):
     code, _ = http("GET", path)
     check(f"REL-0x GET {path} -> 200", code == 200, f"code={code}")
+
+# xem dữ liệu cũng phải đăng nhập (trừ /api/health); WebSocket xác thực bằng tin đầu tiên
+for path in ("/api/state", "/api/commands", "/api/events", "/api/config", "/api/history?metric=temperature_c"):
+    code, _ = http("GET", path, anonymous=True)
+    check(f"READ-01 GET {path} không token -> 401", code == 401, f"code={code}")
+code, me = http("GET", "/api/auth/me")
+check("READ-02 /api/auth/me trả đúng người dùng", code == 200 and me.get("username") == "ui", f"{me}")
+
+
+def ws_try(first_msg):
+    import asyncio
+    import websockets
+
+    async def run():
+        async with websockets.connect(API.replace("http", "ws") + "/ws", open_timeout=5) as ws:
+            if first_msg is not None:
+                await ws.send(json.dumps(first_msg))
+            try:
+                msg = await asyncio.wait_for(ws.recv(), timeout=8)
+                return "data", json.loads(msg).get("kind")
+            except websockets.ConnectionClosed as e:
+                return "closed", e.rcvd.code if e.rcvd else None
+    try:
+        return asyncio.run(run())
+    except Exception as e:
+        return "error", repr(e)
+
+
+r = ws_try(None)
+check("WS-01 WebSocket không gửi token -> bị đóng 4401, không nhận dữ liệu", r == ("closed", 4401), f"{r}")
+r = ws_try({"kind": "auth", "token": "rac"})
+check("WS-02 WebSocket token rác -> đóng 4401", r == ("closed", 4401), f"{r}")
+r = ws_try({"kind": "auth", "token": op})
+check("WS-03 WebSocket token hợp lệ -> nhận snapshot", r == ("data", "snapshot"), f"{r}")
+
+WEB = f"http://localhost:{ENV.get('WEB_PORT', 3000)}"
+try:
+    with urllib.request.urlopen(WEB + "/config.js", timeout=10) as resp:
+        cfg = resp.read().decode("utf8", "replace")
+    leaked = [k for k in ("UI_PASSWORD", "ADMIN_PASSWORD") if ENV.get(k) and ENV[k] in cfg]
+    check("WEB-01 trang web không chứa mật khẩu nào (config.js)", not leaked, f"lộ={leaked}")
+except urllib.error.HTTPError as e:
+    check("WEB-01 trang web không chứa mật khẩu nào (config.js)", e.code == 404, f"code={e.code}")
+except Exception as e:
+    check("WEB-01 trang web không chứa mật khẩu nào (config.js)", False, f"không tải được web: {e}")
 
 # giới hạn đăng nhập
 codes = [http("POST", "/api/auth/login", {"username": "ui", "password": "sai-sai-sai"})[0] for _ in range(7)]

@@ -23,7 +23,11 @@ def check(name, ok, detail=""):
     print(("PASS" if ok else "FAIL"), "-", name, detail)
 
 
+READ = {"token": None}   # API đọc cũng bắt đăng nhập: GET không truyền token thì dùng token này
+
+
 def http(method, path, body=None, token=None):
+    token = token or (READ["token"] if method == "GET" else None)
     req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None)
     req.add_header("Content-Type", "application/json")
     if token:
@@ -57,6 +61,7 @@ def wait(pred, timeout=15):
 
 op = login(ENV["UI_USERNAME"], ENV["UI_PASSWORD"])
 adm = login("admin", ENV["ADMIN_PASSWORD"])
+READ["token"] = op
 
 state = wait(lambda: (lambda s: s if s["telemetry"] and s["telemetry"].get("connection_id") else None)(http("GET", "/api/state")[1]))
 tel = state["telemetry"]

@@ -268,26 +268,19 @@ export class BackendService {
   }
 
   /**
-   * Xác nhận cảnh báo an toàn từ người vận hành (Operator ACK)
-   * Giúp xóa dòng chữ "CHUA XAC NHAN" trên LCD 16x2 của ESP32
+   * Xác nhận cảnh báo an toàn từ người vận hành (Operator ACK).
+   * Chỉ gửi các event_id THẬT đang có trong telemetry.active_alarms (backend trả 404 nếu không khớp).
+   * Lỗi được ném ra nguyên vẹn để giao diện báo cho người dùng, không giả vờ thành công.
    */
-  public async acknowledgeAlarm(eventId?: string): Promise<{ success: boolean; message: string }> {
-    const id = eventId || `alarm_${Date.now()}`;
-    if (this.isServerConnected) {
-      try {
-        await httpClient.acknowledgeAlarm(id);
-        return { success: true, message: 'Đã gửi xác nhận cảnh báo an toàn tới ESP32!' };
-      } catch (err: any) {
-        // Backend chưa có endpoint /api/alarms/{id}/ack:
-        console.warn('[BackendService] Endpoint ACK chưa sẵn sàng trên Backend:', err.message);
-        return {
-          success: true,
-          message: 'Đã ghi nhận xác nhận hiện trường của người vận hành.'
-        };
-      }
-    } else {
-      return { success: true, message: '[Mô phỏng] Đã xác nhận cảnh báo an toàn!' };
+  public async acknowledgeAlarms(eventIds: string[]): Promise<string[]> {
+    if (!this.isServerConnected) throw new Error('Mất kết nối backend, chưa gửi được xác nhận cảnh báo.');
+    if (eventIds.length === 0) throw new Error('Không có cảnh báo nào đang chờ xác nhận.');
+    const done: string[] = [];
+    for (const id of eventIds) {
+      await httpClient.acknowledgeAlarm(id);
+      done.push(id);
     }
+    return done;
   }
 
   public async updateThresholds(newThresholds: DeviceThresholds): Promise<void> {

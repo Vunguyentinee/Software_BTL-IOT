@@ -136,15 +136,14 @@ class FakeEsp32:
                 self.heat_alarm = True
             elif t <= self.thresholds.heat_alarm_off:
                 self.heat_alarm = False
-        # Khóa gas giữ nguyên đầu ra quạt tại thời điểm khóa; không khóa thì AUTO theo nhiệt, cảnh báo nhiệt ép quạt chạy
-        if not self.door_lock:
-            if self.dht_ok and self.modes["fan"] == "auto":
-                if t >= self.thresholds.fan_on:
-                    self.fan_on = True
-                elif t <= self.thresholds.fan_off:
-                    self.fan_on = False
-            if self.heat_alarm:
+        # Như firmware: fanOn = (cảnh báo khói || cảnh báo nhiệt) || (khóa gas ? giữ nguyên : yêu cầu AUTO/tay)
+        if not self.door_lock and self.dht_ok and self.modes["fan"] == "auto":
+            if t >= self.thresholds.fan_on:
                 self.fan_on = True
+            elif t <= self.thresholds.fan_off:
+                self.fan_on = False
+        if self.smoke_alarm or self.heat_alarm:
+            self.fan_on = True
         for name, now_flag, was_flag in (("heat_alarm", self.heat_alarm, was_heat),
                                          ("smoke_alarm", self.smoke_alarm, was_smoke)):
             if now_flag and not was_flag:

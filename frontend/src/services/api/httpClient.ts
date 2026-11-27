@@ -12,36 +12,8 @@ import { authService } from './authService';
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 class HttpClient {
-  private async request<T>(path: string, options: RequestInit = {}, retried = false): Promise<T> {
-    const url = `${API_BASE}${path}`;
-    const headers: Record<string, string> = {
-      ...((options.headers as Record<string, string>) || {}),
-    };
-
-    // Chỉ gán Content-Type: application/json khi request có body (POST, PUT)
-    // Tránh gửi Content-Type ở request GET vì sẽ kích hoạt CORS Preflight (OPTIONS) không cần thiết
-    if (options.body && !headers['Content-Type']) {
-      headers['Content-Type'] = 'application/json';
-    }
-
-    // Chỉ các yêu cầu thay đổi dữ liệu (điều khiển, cấu hình) mới cần JWT; GET để mở.
-    const method = (options.method || 'GET').toUpperCase();
-    const needsAuth = method !== 'GET' && method !== 'HEAD';
-    if (needsAuth) {
-      const token = await authService.getToken();
-      if (token) headers.Authorization = `Bearer ${token}`;
-    }
-
-    const res = await fetch(url, {
-      ...options,
-      headers,
-    });
-
-    if (res.status === 401 && needsAuth && !retried) {
-      // Token hết hạn hoặc bị thu hồi: đăng nhập lại và thử lại đúng một lần
-      authService.invalidate();
-      return this.request<T>(path, options, true);
-    }
+  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const res = await this.authorizedFetch(path, options);
 
     if (!res.ok) {
       let errorMsg = `HTTP Error ${res.status}: ${res.statusText}`;
@@ -55,10 +27,34 @@ class HttpClient {
       } catch {
         // bỏ qua nếu không phải JSON
       }
+      if (res.status === 403) errorMsg = 'Tài khoản của bạn không có quyền thực hiện thao tác này (forbidden)';
       throw new Error(errorMsg);
     }
 
     return res.json();
+  }
+
+  /**
+   * Mọi API (kể cả xem dữ liệu) đều cần JWT của người đã đăng nhập.
+   * 401 = token hết hạn/không hợp lệ -> đăng xuất để trang hiện lại màn hình đăng nhập.
+   */
+  private async authorizedFetch(path: string, options: RequestInit = {}): Promise<Response> {
+    const headers: Record<string, string> = {
+      ...((options.headers as Record<string, string>) || {}),
+    };
+    // Chỉ gán Content-Type khi có body (POST, PUT)
+    if (options.body && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
+    const token = authService.getToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    if (res.status === 401) {
+      authService.logout('expired');
+      throw new Error('not_authenticated');
+    }
+    return res;
   }
 
   public async getState(): Promise<BackendState> {
@@ -110,9 +106,26 @@ class HttpClient {
     );
   }
 
-  /** Đường dẫn tải CSV (để trình duyệt tải trực tiếp, không nạp cả file vào bộ nhớ). */
+  /** Đường dẫn CSV (cần kèm token, nên dùng downloadHistoryCsv thay cho thẻ <a href>). */
   public getHistoryCsvUrl(metric: string, from?: number, to?: number): string {
     return `${API_BASE}/api/history.csv?${this.historyQuery(metric, from, to)}`;
+  }
+
+  /** Tải CSV kèm JWT rồi lưu thành file (thẻ <a href> không gửi được header Authorization). */
+  public async downloadHistoryCsv(metric: string, from?: number, to?: number): Promise<void> {
+    const res = await this.authorizedFetch(`/api/history.csv?${this.historyQuery(metric, from, to)}`);
+    if (!res.ok) throw new Error(`Không tải được CSV (HTTP ${res.status})`);
+    const url = URL.createObjectURL(await res.blob());
+    try {
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${metric}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
   }
 
   public async getEvents(limit = 100): Promise<BackendEvent[]> {
@@ -161,8 +174,8 @@ class HttpClient {
   }
 
   /** Gửi xác nhận của người vận hành đối với sự kiện cảnh báo (Operator ACK) */
-  public async acknowledgeAlarm(eventId: string): Promise<{ status: string }> {
-    return this.request<{ status: string }>(`/api/alarms/${eventId}/ack`, {
+  public async acknowledgeAlarm(eventId: string): Promise<{ event_id: string; source: string; by?: string }> {
+    return this.request<{ event_id: string; source: string; by?: string }>(`/api/alarms/${encodeURIComponent(eventId)}/ack`, {
       method: 'POST',
       body: JSON.stringify({ source: 'operator' }),
     });

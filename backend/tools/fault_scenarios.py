@@ -42,7 +42,10 @@ class Stack:
     def compose(self, *args):
         return subprocess.run(self.base + list(args), cwd=ROOT, capture_output=True, text=True, timeout=300)
 
-    def http(self, method, path, body=None, auth=False, timeout=40):
+    def http(self, method, path, body=None, auth=None, timeout=40):
+        # auth=None: tự gắn token cho mọi route trừ đăng nhập (API đọc cũng bắt đăng nhập)
+        if auth is None:
+            auth = path != "/api/auth/login"
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(self.api + path, method=method, data=data)
         req.add_header("Content-Type", "application/json")

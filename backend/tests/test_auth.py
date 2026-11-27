@@ -100,11 +100,14 @@ def test_put_config_requires_admin(online_service, publisher):
     assert len(publisher.configs) == 1
 
 
-def test_read_endpoints_stay_open(online_service):
-    c = authed_client(online_service, None)
-    for url in ("/api/state", "/api/commands", "/api/events", "/api/config", "/api/health",
+def test_read_endpoints_need_login_but_health_stays_open(online_service):
+    anon = authed_client(online_service, None)
+    viewer = authed_client(online_service, "viewer")
+    for url in ("/api/state", "/api/commands", "/api/events", "/api/config",
                 "/api/history?metric=temperature_c", "/api/metrics/latency"):
-        assert c.get(url).status_code == 200, url
+        assert anon.get(url).status_code == 401, url
+        assert viewer.get(url).status_code == 200, url
+    assert anon.get("/api/health").status_code == 200
 
 
 def test_auth_checked_before_body_validation(online_service):
@@ -178,7 +181,7 @@ def test_jwt_role_downgrade_in_users_is_honoured(online_service, clock):
     assert r.status_code == 403
 
 
-def test_unconfigured_auth_blocks_control_but_not_reads(clock, publisher, storage):
+def test_unconfigured_auth_blocks_control_and_reads(clock, publisher, storage):
     from app.service import Service
     svc = Service(Settings(), storage, publisher, clock=clock)
     svc.on_telemetry(EXAMPLE)
@@ -187,7 +190,8 @@ def test_unconfigured_auth_blocks_control_but_not_reads(clock, publisher, storag
     assert r.status_code == 503 and r.json()["detail"] == "auth_not_configured"
     assert c.put("/api/config", json={"fan_on": 36, "fan_off": 33}).status_code == 503
     assert c.post("/api/auth/login", json={"username": "a", "password": "bbbbbbbb"}).status_code == 503
-    assert c.get("/api/state").status_code == 200
+    assert c.get("/api/state").status_code == 503      # không bao giờ tự mở khi chưa cấu hình
+    assert c.get("/api/health").status_code == 200
     assert publisher.cmds == [] and publisher.configs == []
 
 

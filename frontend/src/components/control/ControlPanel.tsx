@@ -20,6 +20,8 @@ interface ControlPanelProps {
   telemetry: ESP32Telemetry;
   onSwitchToManual: () => void;
   onSwitchToAuto: () => void;
+  /** Tài khoản chỉ xem: khóa mọi nút điều khiển. */
+  readOnly?: boolean;
 }
 
 interface ToastNotification {
@@ -28,7 +30,7 @@ interface ToastNotification {
   message: string;
 }
 
-export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchToManual, onSwitchToAuto }) => {
+export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchToManual, onSwitchToAuto, readOnly = false }) => {
   const {
     fan_on,
     door_command,
@@ -52,6 +54,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchT
   };
 
   const handleExecute = async (target: DeviceTarget, newValue: boolean) => {
+    if (readOnly) {
+      showToast('error', 'Tài khoản chỉ xem không có quyền điều khiển thiết bị.');
+      return;
+    }
     if (isAuto) {
       showToast('error', 'Hệ thống đang ở chế độ Tự động! Hãy chuyển sang Thủ công để điều khiển.');
       return;
@@ -222,6 +228,13 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchT
         </div>
       )}
 
+      {readOnly && (
+        <div className="mb-4 p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center gap-2 text-xs text-slate-700">
+          <Lock className="w-4 h-4 text-slate-500 shrink-0" />
+          <span>Tài khoản của bạn chỉ có quyền <strong>xem</strong>. Liên hệ quản trị để được cấp quyền điều khiển.</span>
+        </div>
+      )}
+
       {/* THÔNG BÁO KHÓA CHẾ ĐỘ AUTO */}
       {/* {isAuto && (
         <div className="mb-4 p-3.5 rounded-xl bg-amber-50/80 border border-amber-200 flex items-center justify-between text-xs text-amber-900 shadow-xs">
@@ -287,7 +300,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ telemetry, onSwitchT
               ) : (
                 <button
                   type="button"
-                  disabled={isAuto || isLoading}
+                  disabled={readOnly || isAuto || isLoading}
                   onClick={() => handleExecute(device.target, device.nextValue)}
                   className={`w-full py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${
                     isAuto
