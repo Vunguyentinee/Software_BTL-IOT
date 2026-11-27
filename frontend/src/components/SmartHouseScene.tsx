@@ -236,7 +236,8 @@ function HouseModel({
   const cutawayWallsRef = useRef<THREE.Mesh[]>([]);
 
   // Tọa độ các sensor để gắn nhãn <Html>
-  const pirPos = useMemo(() => new THREE.Vector3(0.036, 0.105, 0.090), []);
+  // PIR đã được dời và xoay ra mặt ngoài phía trên cửa chính (Z > 0.10)
+  const pirPos = useMemo(() => new THREE.Vector3(0.036, 0.114, 0.112), []);
   const dht11Pos = useMemo(() => new THREE.Vector3(-0.068, 0.080, 0), []);
   const gasPos = useMemo(() => new THREE.Vector3(0.063, 0.110, 0.025), []);
   const ldrPos = useMemo(() => new THREE.Vector3(-0.045, 0.098, 0.1035), []);
@@ -317,6 +318,19 @@ function HouseModel({
           mat.color.set('#1e293b');
           mat.roughness = 0.6;
         }
+      }
+
+      // 11. Dời & xoay cụm cảm biến PIR từ mặt trong ra mặt ngoài Tuong_Truoc (+Z, phía trên Den_LED2)
+      if (name === 'CamBien_PIR_BoMach') {
+        child.position.set(0.036, 0.114, 0.101);
+      }
+      if (name === 'CamBien_PIR_Co') {
+        child.position.set(0.036, 0.114, 0.1035);
+      }
+      if (name === 'CamBien_PIR_ThauKinh') {
+        child.position.set(0.036, 0.114, 0.105);
+        // Xoay +90° quanh trục X để chỏm vòm thấu kính hướng ra mặt ngoài (+Z) thay vì vào trong (-Z)
+        child.rotation.set(Math.PI / 2, 0, 0);
       }
     });
   }, [cloned]);
@@ -483,10 +497,10 @@ function HouseModel({
         distance={0.2}
       />
 
-      {/* Nón quét PIR 3D: CamBien_PIR_VungQuet (mặc định ẩn) */}
+      {/* Nón quét PIR 3D: CamBien_PIR_VungQuet (hướng ra mặt ngoài +Z, đỉnh nón đặt tại thấu kính) */}
       {showPirCone && (
-        <group position={[0.036, 0.105, 0.090]}>
-          <mesh position={[0, -0.025, -0.045]} rotation={[-Math.PI / 4, 0, 0]}>
+        <group position={[0.036, 0.114, 0.111]}>
+          <mesh position={[0, -0.0283, 0.0283]} rotation={[-Math.PI / 4, 0, 0]}>
             <coneGeometry args={[0.035, 0.08, 16, 1, true]} />
             <meshStandardMaterial
               color={telemetry.motion_detected ? '#eab308' : '#38bdf8'}
@@ -496,7 +510,7 @@ function HouseModel({
               wireframe={false}
             />
           </mesh>
-          <mesh position={[0, -0.025, -0.045]} rotation={[-Math.PI / 4, 0, 0]}>
+          <mesh position={[0, -0.0283, 0.0283]} rotation={[-Math.PI / 4, 0, 0]}>
             <coneGeometry args={[0.035, 0.08, 12, 1, true]} />
             <meshStandardMaterial
               color={telemetry.motion_detected ? '#facc15' : '#0284c7'}
